@@ -110,7 +110,6 @@ cmd_init() {
   local id dest
   id=$(echo "${repo/\//-}" | tr 'A-Z' 'a-z' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
   dest="$HOME/.kelsen/corpus/$repo"
-  [ ! -e "$dest" ] || die "$dest already exists"
   if [ -z "$as" ]; then
     as=$(active_login)
     say "Creating the store as $as, gh's active account. Use --as to choose another."
@@ -121,64 +120,89 @@ cmd_init() {
   GH_TOKEN=$(token "$host" "$as") || die "gh has no token for $as; run: gh auth login"
   export GH_TOKEN
 
-  gh repo create "$repo" --template "$TEMPLATE" "--$visibility" > /dev/null
-  local tries=0
-  until gh api "repos/$repo/branches/main" > /dev/null 2>&1; do
-    tries=$((tries + 1)); [ "$tries" -lt 30 ] || die "$repo never got its template content"; sleep 2
-  done
-  mkdir -p "$(dirname "$dest")"
-  git -c credential.helper= -c credential.helper="$(helper "$host" "$as")" clone -q "https://$host/$repo.git" "$dest"
-
-  write_settings ruleset
-  mkdir -p "$dest/.github"
-  echo "* @$owners" | sed 's/,/ @/g' > "$dest/.github/CODEOWNERS"
-  commit_as_creator kelsen.yml .github/CODEOWNERS
-
-  local err created rid
-  err=$(mktemp)
-  if created=$(ruleset | gh api -X POST "repos/$repo/rulesets" --input - 2> "$err"); then
-    rid=$(echo "$created" | jq -r .id)
-    gh api "repos/$repo/rulesets/$rid" | jq -e --argjson want "$(ruleset)" \
-      '.bypass_actors == [] and contains($want)' > /dev/null \
-      || die "ruleset $rid on $repo does not read back as sent; fix it on GitHub before admitting entries"
-    say "Protected the default branch with ruleset $rid."
-    gh api -X PATCH "repos/$repo" -F allow_auto_merge=true > /dev/null
-    [ "$(gh api "repos/$repo" --jq .allow_auto_merge)" = true ] \
-      || die "auto-merge on $repo does not read back as enabled; enable it on GitHub before admitting entries"
-    say "Enabled auto-merge: an approved PR merges once its checks pass."
-  elif [ "$visibility" = private ] && grep -q '(HTTP 403)' "$err"; then
-    say "WARNING: this plan cannot protect a private repository, so $repo is unprotected:"
-    say "  the checks run but gate nothing, and search labels its results. GitHub Pro or Team fixes it."
-    write_settings none
-    commit_as_creator kelsen.yml
+  if [ -e "$dest" ]; then
+    store "$dest"
+    [ "$(repo_of "$dest")" = "$repo" ] || die "$dest is a clone of $(repo_of "$dest"), not $repo"
   else
-    die "could not protect $repo: $(cat "$err")"
+    gh api "repos/$repo" > /dev/null 2>&1 || gh repo create "$repo" --template "$TEMPLATE" "--$visibility" > /dev/null
+    local tries=0
+    until gh api "repos/$repo/branches/main" > /dev/null 2>&1; do
+      tries=$((tries + 1)); [ "$tries" -lt 30 ] || die "$repo never got its template content"; sleep 2
+    done
+    mkdir -p "$(dirname "$dest")"
+    git -c credential.helper= -c credential.helper="$(helper "$host" "$as")" clone -q "https://$host/$repo.git" "$dest"
+    store "$dest"
+    git -C "$dest" config credential.helper ''
+    git -C "$dest" config --add credential.helper "$(helper "$host" "$account")"
+    bm project add "$(project_of "$dest")" "$dest/entries" --no-wait > /dev/null
+    bm reindex --search -p "$(project_of "$dest")" > /dev/null
   fi
-  rm -f "$err"
 
-  git -C "$dest" config credential.helper ''
-  git -C "$dest" config --add credential.helper "$(helper "$host" "$account")"
-  bm project add "$(project_of "$dest")" "$dest/entries" --no-wait > /dev/null
-  bm reindex --search -p "$(project_of "$dest")" > /dev/null
+  if [ "$(setting "$dest" id)" != "$id" ]; then
+    write_settings ruleset
+    mkdir -p "$dest/.github"
+    echo "* @$owners" | sed 's/,/ @/g' > "$dest/.github/CODEOWNERS"
+    commit_as_creator kelsen.yml .github/CODEOWNERS
+  fi
+  [ "$(setting "$dest" account)" = "$account" ] || die "$repo is operated by $(setting "$dest" account), not $account"
+  [ "$(setting "$dest" protection)" = none ] || protect
+
+  if ! gh api "users/$account" > /dev/null 2>&1; then
+    needs_person "The machine account $account does not exist yet. A person signs it up, because GitHub's terms" \
+      "require one: https://github.com/signup. Then, in a browser signed in as $account, they run:" "$(login_command)"
+  fi
+  gh api -X PUT "repos/$repo/collaborators/$account" -f permission=push > /dev/null
+  local bot invitation
+  bot=$(token "$host" "$account" 2> /dev/null) \
+    || needs_person "gh is not logged in as $account. In a browser signed in as $account, a person runs:" "$(login_command)"
+  invitation=$(GH_TOKEN=$bot gh api user/repository_invitations \
+    --jq "[.[] | select(.repository.full_name | ascii_downcase == \"$(tr 'A-Z' 'a-z' <<< "$repo")\")][0].id // empty")
+  [ -z "$invitation" ] || GH_TOKEN=$bot gh api -X PATCH "user/repository_invitations/$invitation" > /dev/null
+  gh api "repos/$repo/collaborators/$account" > /dev/null 2>&1 || die "$account is not a collaborator on $repo"
 
   say "Store ready: $dest"
-  say ""
   say "The machine account $account opens every admission PR; it merges once a person approves it."
-  say "  1. A person signs it up, because GitHub's terms require one: https://github.com/signup"
-  if gh api "users/$account" > /dev/null 2>&1; then
-    gh api -X PUT "repos/$repo/collaborators/$account" -f permission=push > /dev/null
-    say "  2. Invited $account with write access."
-  else
-    say "  2. Once it exists, invite it with write access:"
-    say "       GH_TOKEN=\$(gh auth token --user $as) gh api -X PUT repos/$repo/collaborators/$account -f permission=push"
+}
+
+# Runs as the creator, inside cmd_init. A re-run leaves an existing review rule, and so its approvals, alone.
+protect() {
+  local err created rid
+  if [ -z "$(review_rule "$dest")" ]; then
+    err=$(mktemp)
+    if created=$(ruleset | gh api -X POST "repos/$repo/rulesets" --input - 2> "$err"); then
+      rid=$(echo "$created" | jq -r .id)
+      gh api "repos/$repo/rulesets/$rid" | jq -e --argjson want "$(ruleset)" \
+        '.bypass_actors == [] and contains($want)' > /dev/null \
+        || die "ruleset $rid on $repo does not read back as sent; fix it on GitHub before admitting entries"
+      say "Protected the default branch with ruleset $rid."
+    elif [ "$visibility" = private ] && grep -q '(HTTP 403)' "$err"; then
+      say "WARNING: this plan cannot protect a private repository, so $repo is unprotected:"
+      say "  the checks run but gate nothing, and search labels its results. GitHub Pro or Team fixes it."
+      write_settings none
+      commit_as_creator kelsen.yml
+      rm -f "$err"
+      return
+    else
+      die "could not protect $repo: $(cat "$err")"
+    fi
+    rm -f "$err"
   fi
-  say "  3. As $account, accept the invitation: https://$host/$repo/invitations"
-  say "  4. As $account, create a classic token with the repo and read:org scopes:"
-  say "     https://$host/settings/tokens/new (a fine-grained token cannot contribute to a"
-  say "     repository its account only collaborates on)"
-  say "  5. Log it in to gh, then switch back:"
-  say "       gh auth login --hostname $host --with-token < token.txt"
-  say "       gh auth switch --hostname $host --user $as"
+  [ "$(gh api "repos/$repo" --jq .allow_auto_merge)" = true ] && return
+  gh api -X PATCH "repos/$repo" -F allow_auto_merge=true > /dev/null
+  [ "$(gh api "repos/$repo" --jq .allow_auto_merge)" = true ] \
+    || die "auto-merge on $repo does not read back as enabled; enable it on GitHub before admitting entries"
+  say "Enabled auto-merge: an approved PR merges once its checks pass."
+}
+
+# The browser login happens once, at a person's terminal; gh then keeps the token, so re-running init picks it up.
+login_command() {
+  printf 'gh auth login --hostname %s --web --scopes repo,read:org && gh auth switch --hostname %s --user %s' \
+    "$host" "$host" "$as"
+}
+needs_person() {
+  printf 'corpus: %s\n' "$@" >&2
+  printf 'corpus: then run this init again to finish %s.\n' "$repo" >&2
+  exit 1
 }
 
 cmd_sync() {

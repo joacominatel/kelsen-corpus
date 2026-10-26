@@ -27,6 +27,7 @@ case "$1 $2" in
     # A store hosting these tests is not the template: leave its entries and settings behind.
     (cd "$FAKE_TEMPLATE" && git ls-files -z -- . ':!entries' ':!kelsen.yml' | xargs -0 tar -cf -) | tar -xf - -C "$seed"
     mkdir -p "$seed/entries"; touch "$seed/entries/.gitkeep"
+    printf 'id: example\naccount: example-bot\nhost: github.com\nspec: 1\nprotection: none\n' > "$seed/kelsen.yml"
     git -C "$seed" init -q -b main
     git -C "$seed" add -f .
     git -C "$seed" commit -q -m "Initial commit"
@@ -56,7 +57,19 @@ case "$1 $2" in
       "GET users/"*)
         [ -e "$FAKE/accounts/${path#users/}" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
         echo '{}' ;;
+      "GET user/repository_invitations")
+        user=${GH_TOKEN#token-}
+        if [ -e "$FAKE/invitations/$user" ]; then
+          jq -n --arg repo "$(cat "$FAKE/invitations/$user")" '[{id: 99, repository: {full_name: $repo}}]'
+        else echo '[]'; fi | out ;;
+      "PATCH user/repository_invitations/99")
+        user=${GH_TOKEN#token-}
+        [ -e "$FAKE/invitations/$user" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+        mv "$FAKE/invitations/$user" "$FAKE/collaborators/$user" ;;
+      "GET repos/"*/collaborators/*)
+        [ -e "$FAKE/collaborators/${path##*/}" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; } ;;
       "GET repos/"*/rules/branches/main)
+        [ -e "$FAKE/ruleset.json" ] || { echo '[]' | out; exit 0; }
         jq '.id as $id | [.rules[] | . + {ruleset_source_type: "Repository", ruleset_id: $id}]' "$FAKE/ruleset.json" | out ;;
       "GET repos/"*/branches/main) echo '{}' ;;
       "POST repos/"*/rulesets)
@@ -77,12 +90,16 @@ case "$1 $2" in
       "PUT repos/"*/rulesets/42)
         if [ -e "$FAKE/ruleset-update-ignored" ]; then cat > /dev/null; else jq '. + {id: 42}' > "$FAKE/ruleset.json"; fi
         out < "$FAKE/ruleset.json" ;;
-      "PUT repos/"*/collaborators/*) echo '{}' ;;
+      "PUT repos/"*/collaborators/*)
+        user=${path##*/}; repo=${path#repos/}; repo=${repo%/collaborators/*}
+        [ -e "$FAKE/collaborators/$user" ] || echo "$repo" > "$FAKE/invitations/$user"
+        echo '{}' ;;
       "PATCH repos/"*)
         [ "$*" = "repos/${path#repos/} -F allow_auto_merge=true" ] || unexpected api "$method" "$@"
         [ -e "$FAKE/auto-merge-ignored" ] || touch "$FAKE/auto-merge" ;;
       "GET repos/"*)
         [[ $path =~ ^repos/[^/]+/[^/]+$ ]] || unexpected api "$method" "$path"
+        [ -d "$FAKE/remotes/${path#repos/}.git" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
         printf '{"allow_auto_merge":%s}\n' "$([ -e "$FAKE/auto-merge" ] && echo true || echo false)" | out ;;
       *) unexpected api "$method" "$path" ;;
     esac ;;

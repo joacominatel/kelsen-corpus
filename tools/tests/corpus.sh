@@ -20,7 +20,7 @@ fresh() {
   export HOME="$T/home" FAKE="$T/fake" FAKE_TEMPLATE="$ROOT" PATH="$ROOT/tools/tests/fakes:$BASE_PATH"
   export GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1
   unset GH_TOKEN GITHUB_TOKEN
-  mkdir -p "$HOME" "$FAKE/remotes/acme" "$FAKE/accounts" "$FAKE/logged-out"
+  mkdir -p "$HOME" "$FAKE/remotes/acme" "$FAKE/accounts" "$FAKE/logged-out" "$FAKE/invitations" "$FAKE/collaborators"
   touch "$FAKE/gh.log" "$FAKE/bm.log" "$FAKE/accounts/alice" "$FAKE/accounts/kb-bot"
   echo alice > "$FAKE/active"
   git config --global user.name Tester
@@ -200,18 +200,70 @@ test_init_registers_and_indexes_the_search_project() {
   has "$FAKE/bm.log" "reindex --search -p corpus-acme-kb"
 }
 
+LOGIN_COMMAND="gh auth login --hostname github.com --web --scopes repo,read:org && gh auth switch --hostname github.com --user alice"
+
 test_init_invites_an_existing_machine_account_with_write_access() {
   init_store || fail "init failed: $(cat "$OUT")"
   has "$FAKE/gh.log" "GH_TOKEN=token-alice api -X PUT repos/acme/kb/collaborators/kb-bot -f permission=push"
-  has "$OUT" "gh auth login"
+}
+
+test_init_accepts_the_invitation_as_a_logged_in_machine_account() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  has "$FAKE/gh.log" "GH_TOKEN=token-kb-bot api -X PATCH user/repository_invitations/99"
+  [ -e "$FAKE/collaborators/kb-bot" ] || fail "kb-bot is not a collaborator"
+  lacks "$OUT" "gh auth login"
+  has "$OUT" "Store ready"
+}
+
+test_init_asks_a_person_for_one_web_login_of_the_machine_account() {
+  touch "$FAKE/logged-out/kb-bot"
+  ! init_store || fail "init finished without the machine account logged in"
+  has "$OUT" "$LOGIN_COMMAND"
+  [ "$(grep -c 'gh auth' "$OUT")" = 1 ] || fail "expected exactly one command: $(cat "$OUT")"
+  lacks "$OUT" "token.txt"
+  lacks "$OUT" "settings/tokens"
+  lacks "$FAKE/gh.log" "user/repository_invitations"
+  [ -d "$CLONE/.git" ] || fail "no clone before the login step"
 }
 
 test_init_guides_the_signup_of_a_missing_machine_account() {
   rm "$FAKE/accounts/kb-bot"
-  init_store || fail "init failed: $(cat "$OUT")"
+  touch "$FAKE/logged-out/kb-bot"
+  ! init_store || fail "init finished without a machine account"
   lacks "$FAKE/gh.log" "collaborators/kb-bot"
   has "$OUT" "https://github.com/signup"
-  has "$OUT" "repos/acme/kb/collaborators/kb-bot -f permission=push"
+  has "$OUT" "$LOGIN_COMMAND"
+}
+
+test_init_rerun_after_the_person_steps_finishes_without_recreating() {
+  rm "$FAKE/accounts/kb-bot"
+  touch "$FAKE/logged-out/kb-bot"
+  ! init_store || fail "init finished without a machine account"
+  touch "$FAKE/accounts/kb-bot"
+  rm "$FAKE/logged-out/kb-bot"
+  : > "$FAKE/gh.log"; : > "$FAKE/bm.log"
+  init_store || fail "re-run failed: $(cat "$OUT")"
+  lacks "$FAKE/gh.log" "repo create"
+  lacks "$FAKE/gh.log" "POST repos/acme/kb/rulesets"
+  lacks "$FAKE/bm.log" "project add"
+  has "$FAKE/gh.log" "GH_TOKEN=token-alice api -X PUT repos/acme/kb/collaborators/kb-bot -f permission=push"
+  has "$FAKE/gh.log" "GH_TOKEN=token-kb-bot api -X PATCH user/repository_invitations/99"
+  [ "$(remote log --oneline main | grep -c 'configure store')" = 1 ] || fail "settings committed again"
+  has "$OUT" "Store ready"
+}
+
+test_init_rerun_on_a_finished_store_changes_nothing() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  approvals_off || fail "approvals off failed: $(cat "$OUT")"
+  before=$(remote rev-parse main)
+  : > "$FAKE/gh.log"; : > "$FAKE/bm.log"
+  init_store || fail "re-run failed: $(cat "$OUT")"
+  [ "$(remote rev-parse main)" = "$before" ] || fail "re-run pushed to main"
+  for call in "repo create" "rulesets" "PATCH repos/acme/kb" "user/repository_invitations/"; do
+    lacks "$FAKE/gh.log" "$call"
+  done
+  [ ! -s "$FAKE/bm.log" ] || fail "re-run touched Basic Memory: $(cat "$FAKE/bm.log")"
+  [ "$(review_params)" = "[0,false]" ] || fail "re-run changed approvals: $(review_params)"
 }
 
 test_init_refuses_an_account_that_is_not_a_login() {
