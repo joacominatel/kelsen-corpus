@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/joacominatel/kelsen-corpus/schema/entry.schema.json",
+  "title": "kelsen-corpus entry frontmatter, spec 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["permalink", "title", "type", "status", "claim"],
+  "properties": {
+    "permalink": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*/[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "type": { "const": "knowledge" },
+    "status": { "enum": ["verified", "stale", "superseded", "retracted"] },
+    "claim": { "type": "string", "minLength": 1 }
+  }
+}
