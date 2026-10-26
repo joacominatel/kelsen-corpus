@@ -1,0 +1,6 @@
+id: renamed
+account: example-bot
+host: github.com
+spec: 2
+protection: none
+license: CC-BY-4.0

@@ -1,0 +1,5 @@
+id: example
+account: example-bot
+host: github.com
+spec: 2
+protection: none
