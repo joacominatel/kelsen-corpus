@@ -14,11 +14,13 @@ usage: corpus.sh init <owner>/<name> --public|--private --account <bot> [--licen
        corpus.sh sync <clone>
        corpus.sh propose <clone> <slug>
        corpus.sh search <clone> <query>
+       corpus.sh approvals <clone> on|off|status [--as <login>]
 EOF
   exit 2
 }
 die() { printf 'corpus: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
+warn() { printf 'WARNING: %s\n' "$*" >&2; }
 
 bm() { uvx --quiet --python 3.12 --from "$BASIC_MEMORY" bm "$@"; }
 
@@ -37,6 +39,28 @@ project_of() { echo "corpus-$(repo_of "$1" | tr '/A-Z' '-a-z')"; }
 default_branch() { local ref; ref=$(git -C "$1" symbolic-ref --short refs/remotes/origin/HEAD); echo "${ref#origin/}"; }
 store() { git -C "$1" rev-parse --is-inside-work-tree > /dev/null 2>&1 && [ -f "$1/kelsen.yml" ] || die "$1 is not a store clone"; }
 
+active_login() { env -u GH_TOKEN -u GITHUB_TOKEN gh api user --jq .login; }
+
+# The pull request rule GitHub applies to the store's default branch, empty when there is none.
+review_rule() {
+  gh api "repos/$(repo_of "$1")/rules/branches/$(default_branch "$1")" \
+    --jq '[.[] | select(.type == "pull_request")][0] // empty'
+}
+approvals_state() {
+  jq -r '.parameters | if .required_approving_review_count > 0 and .require_code_owner_review then "on" else "off" end'
+}
+
+warn_when_approvals_are_off() {
+  local clone=$1 tok rule
+  [ "$(setting "$clone" protection)" != none ] || return 0
+  if ! tok=$(token "$(setting "$clone" host)" "$(setting "$clone" account)" 2> /dev/null) \
+    || ! rule=$(GH_TOKEN=$tok review_rule "$clone" 2> /dev/null); then
+    warn "could not read the review rule of $(repo_of "$clone")"
+  elif [ -z "$rule" ] || [ "$(approvals_state <<< "$rule")" = off ]; then
+    warn "approvals are off on $(repo_of "$clone"): entries merge without a person's review"
+  fi
+}
+
 ruleset() {
   jq -n '{
     name: "admission", target: "branch", enforcement: "active", bypass_actors: [],
@@ -50,7 +74,7 @@ ruleset() {
         required_review_thread_resolution: false}},
       {type: "required_status_checks", parameters: {
         strict_required_status_checks_policy: true,
-        required_status_checks: [{context: "validate"}, {context: "bm-noop"}]}}
+        required_status_checks: [{context: "validate"}, {context: "bm-noop"}, {context: "tools"}]}}
     ]}'
 }
 
@@ -88,7 +112,7 @@ cmd_init() {
   dest="$HOME/.kelsen/corpus/$repo"
   [ ! -e "$dest" ] || die "$dest already exists"
   if [ -z "$as" ]; then
-    as=$(env -u GH_TOKEN -u GITHUB_TOKEN gh api user --jq .login)
+    as=$(active_login)
     say "Creating the store as $as, gh's active account. Use --as to choose another."
   fi
   owners=${owners:-$as}
@@ -166,6 +190,7 @@ cmd_sync() {
   [ "$(git -C "$clone" branch --show-current)" = "$branch" ] || die "$clone is not on $branch"
   git -C "$clone" pull -q --ff-only origin "$branch"
   bm reindex --search -p "$(project_of "$clone")" > /dev/null
+  warn_when_approvals_are_off "$clone"
 }
 
 scaffold() {
@@ -245,15 +270,72 @@ cmd_search() {
   shift
   store "$clone"
   [ "$(setting "$clone" protection)" != none ] || label=unprotected
+  warn_when_approvals_are_off "$clone"
   bm tool search-notes "$*" --project "$(project_of "$clone")" --entity-type entity --json \
     | jq -r --arg dir "$clone/entries" --arg label "$label" \
       '.results[] | [.permalink, .title, "\($dir)/\(.file_path)"] + (if $label == "" then [] else [$label] end) | @tsv'
+}
+
+# Only a person at a terminal can type the confirmation; an agent's shell has no /dev/tty.
+confirm() {
+  local clone=$1 mode=$2 as=$3 repo answer
+  repo=$(repo_of "$clone")
+  if ! (: <> /dev/tty) 2> /dev/null; then
+    printf 'corpus: turning approvals %s needs a person at a terminal. Run this in your own:\n  %q approvals %q %s --as %s\n' \
+      "$mode" "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" "$(cd "$clone" && pwd)" "$mode" "$as" >&2
+    exit 1
+  fi
+  exec 3<> /dev/tty
+  printf 'Turning approvals %s on %s. Type %s to confirm: ' "$mode" "$repo" "$repo" >&3
+  IFS= read -r answer <&3 || answer=
+  exec 3>&-
+  [ "$answer" = "$repo" ] || die "the confirmation did not match $repo; nothing changed"
+}
+
+cmd_approvals() {
+  [ $# -ge 2 ] || usage
+  local clone=$1 mode=$2 as=
+  shift 2
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --as) as=${2:-}; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  case $mode in on|off|status) ;; *) usage ;; esac
+  store "$clone"
+  local repo account rule rid sent
+  repo=$(repo_of "$clone"); account=$(setting "$clone" account)
+  [ "$(setting "$clone" protection)" != none ] || die "$repo has no ruleset, so it has no approvals to change"
+  [ -n "$as" ] || as=$(active_login)
+  [[ $as =~ $LOGIN ]] || die "accounts must be GitHub logins"
+  [ "$as" != "$account" ] || die "$account is the store's machine account; only a person changes approvals"
+  [ "$mode" = status ] || confirm "$clone" "$mode" "$as"
+  GH_TOKEN=$(token "$(setting "$clone" host)" "$as") || die "gh has no token for $as; run: gh auth login"
+  export GH_TOKEN
+
+  rule=$(review_rule "$clone")
+  [ -n "$rule" ] || die "$repo has no pull request rule on its default branch"
+  if [ "$mode" = status ]; then
+    say "approvals: $(approvals_state <<< "$rule")"
+    return
+  fi
+  rid=$(jq -r .ruleset_id <<< "$rule")
+  # Code owner review demands an approval of its own, so off clears it along with the count.
+  sent=$(gh api "repos/$repo/rulesets/$rid" | jq --argjson on "$([ "$mode" = on ] && echo true || echo false)" '
+    {name, target, enforcement, bypass_actors, conditions, rules}
+    | (.rules[] | select(.type == "pull_request").parameters)
+      |= (.required_approving_review_count = (if $on then 1 else 0 end) | .require_code_owner_review = $on)')
+  gh api -X PUT "repos/$repo/rulesets/$rid" --input - <<< "$sent" > /dev/null
+  gh api "repos/$repo/rulesets/$rid" | jq -e --argjson want "$sent" 'contains($want)' > /dev/null \
+    || die "ruleset $rid on $repo does not read back as sent; check it on GitHub"
+  say "Approvals are $mode on $repo."
 }
 
 [ $# -gt 0 ] || usage
 command=$1
 shift
 case $command in
-  init|sync|propose|search) "cmd_$command" "$@" ;;
+  init|sync|propose|search|approvals) "cmd_$command" "$@" ;;
   *) usage ;;
 esac

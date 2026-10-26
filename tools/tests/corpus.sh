@@ -32,6 +32,31 @@ fresh() {
 
 init_store() { "$CORPUS" init acme/kb --private --account kb-bot --as alice "$@" > "$OUT" 2>&1; }
 
+# at_terminal <typed> <command...>: runs the command with a terminal of its own, on which a person
+# types <typed>. Its output still goes to the caller's stdout and stderr.
+at_terminal() {
+  python3 -c '
+import os, pty, sys
+pid, master = pty.fork()
+if pid == 0:
+    os.dup2(3, 1); os.dup2(4, 2)
+    os.execvp(sys.argv[2], sys.argv[2:])
+os.write(master, (sys.argv[1] + "\n").encode())
+while True:
+    try:
+        if not os.read(master, 1024): break
+    except OSError: break
+sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))
+' "$@" 3>&1 4>&2
+}
+
+# without_terminal <command...>: runs the command in a new session, with no terminal, as an agent's shell does.
+without_terminal() { python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@"; }
+
+review_params() { jq -c '.rules[] | select(.type == "pull_request").parameters
+  | [.required_approving_review_count, .require_code_owner_review]' "$FAKE/ruleset.json"; }
+approvals_off() { at_terminal acme/kb "$CORPUS" approvals "$CLONE" off --as alice > "$OUT" 2>&1; }
+
 entry() {
   cat <<'EOF'
 ---
@@ -88,6 +113,22 @@ test_init_settings_pass_the_validator() {
     || fail "kc-validate rejected the new store: $(cat "$T/kc")"
 }
 
+test_init_leaves_the_hosting_store_content_behind() {
+  host="$T/host"
+  mkdir -p "$host"
+  (cd "$ROOT" && git ls-files -z | xargs -0 tar -cf -) | tar -xf - -C "$host"
+  git -C "$host" init -q -b main
+  printf 'id: other-kb\naccount: other-bot\nhost: github.com\nspec: 1\nprotection: none\n' > "$host/kelsen.yml"
+  entry | sed 's|^permalink: acme-kb/|permalink: other-kb/|' > "$host/entries/yanked-release.md"
+  git -C "$host" add -f .
+  git -C "$host" commit -q -m host
+  export FAKE_TEMPLATE="$host"
+  init_store || fail "init failed: $(cat "$OUT")"
+  [ ! -e "$CLONE/entries/yanked-release.md" ] || fail "the hosting store's entry reached the new store"
+  uv run --quiet --project "$CLONE/validator" --locked kc-validate "$CLONE" > "$T/kc" 2>&1 \
+    || fail "kc-validate rejected the new store: $(cat "$T/kc")"
+}
+
 test_init_applies_the_admission_ruleset() {
   init_store || fail "init failed: $(cat "$OUT")"
   jq -e '
@@ -97,13 +138,19 @@ test_init_applies_the_admission_ruleset() {
     and (.rules[] | select(.type == "pull_request").parameters
          | .required_approving_review_count == 1 and .require_code_owner_review and .dismiss_stale_reviews_on_push)
     and (.rules[] | select(.type == "required_status_checks").parameters
-         | .strict_required_status_checks_policy and ([.required_status_checks[].context] | sort) == ["bm-noop", "validate"])
+         | .strict_required_status_checks_policy and ([.required_status_checks[].context] | sort) == ["bm-noop", "tools", "validate"])
   ' "$FAKE/ruleset.json" > /dev/null || fail "ruleset sent: $(cat "$FAKE/ruleset.json")"
 }
 
 test_init_fails_when_the_ruleset_reads_back_different() {
   touch "$FAKE/readback-differs"
   ! init_store || fail "init succeeded with a ruleset that has a bypass actor"
+  has "$OUT" "ruleset"
+}
+
+test_init_fails_when_the_ruleset_reads_back_without_the_tools_check() {
+  touch "$FAKE/readback-drops-tools"
+  ! init_store || fail "init succeeded with a ruleset that does not require tools"
   has "$OUT" "ruleset"
 }
 
@@ -185,6 +232,14 @@ test_sync_fast_forwards_and_reindexes() {
   "$CORPUS" sync "$CLONE" > "$OUT" 2>&1 || fail "sync failed: $(cat "$OUT")"
   [ -f "$CLONE/entries/yanked-release.md" ] || fail "the admitted entry did not arrive"
   has "$FAKE/bm.log" "reindex --search -p corpus-acme-kb"
+  lacks "$OUT" "WARNING"
+}
+
+test_sync_warns_when_approvals_are_off() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  approvals_off || fail "approvals off failed: $(cat "$OUT")"
+  "$CORPUS" sync "$CLONE" > "$OUT" 2>&1 || fail "sync failed: $(cat "$OUT")"
+  has "$OUT" "WARNING: approvals are off"
 }
 
 test_sync_refuses_a_dirty_tree() {
@@ -283,6 +338,16 @@ test_search_queries_the_store_project() {
   has "$OUT" "acme-kb/yanked-release"
   has "$OUT" "$CLONE/entries/yanked-release.md"
   lacks "$OUT" "unprotected"
+  lacks "$OUT" "WARNING"
+}
+
+test_search_warns_when_approvals_are_off() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  approvals_off || fail "approvals off failed: $(cat "$OUT")"
+  search_result
+  "$CORPUS" search "$CLONE" yanked > "$OUT" 2>&1 || fail "search failed: $(cat "$OUT")"
+  has "$OUT" "WARNING: approvals are off"
+  has "$OUT" "acme-kb/yanked-release"
 }
 
 test_search_labels_results_of_an_unprotected_store() {
@@ -291,6 +356,62 @@ test_search_labels_results_of_an_unprotected_store() {
   search_result
   "$CORPUS" search "$CLONE" yanked > "$OUT" 2>&1 || fail "search failed: $(cat "$OUT")"
   grep -q 'acme-kb/yanked-release.*unprotected' "$OUT" || fail "unlabeled result: $(cat "$OUT")"
+}
+
+# --- approvals -----------------------------------------------------------------------------
+
+test_approvals_off_drops_the_required_review_and_keeps_the_checks() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  approvals_off || fail "approvals off failed: $(cat "$OUT")"
+  has "$FAKE/gh.log" "GH_TOKEN=token-alice api -X PUT repos/acme/kb/rulesets/42"
+  [ "$(review_params)" = "[0,false]" ] || fail "review rule after off: $(review_params)"
+  jq -e '.rules[] | select(.type == "required_status_checks").parameters
+    | [.required_status_checks[].context] == ["validate", "bm-noop", "tools"]' "$FAKE/ruleset.json" > /dev/null \
+    || fail "status checks changed: $(cat "$FAKE/ruleset.json")"
+}
+
+test_approvals_on_restores_the_required_review() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  approvals_off || fail "approvals off failed: $(cat "$OUT")"
+  at_terminal acme/kb "$CORPUS" approvals "$CLONE" on --as alice > "$OUT" 2>&1 || fail "approvals on failed: $(cat "$OUT")"
+  [ "$(review_params)" = "[1,true]" ] || fail "review rule after on: $(review_params)"
+}
+
+test_approvals_fails_when_the_ruleset_reads_back_unchanged() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  touch "$FAKE/ruleset-update-ignored"
+  ! approvals_off || fail "approvals off succeeded on a ruleset that did not change"
+  has "$OUT" "read back"
+}
+
+test_approvals_refuses_without_a_terminal_and_prints_the_command() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  ! without_terminal "$CORPUS" approvals "$CLONE" off --as alice > "$OUT" 2>&1 || fail "approvals ran without a person"
+  lacks "$FAKE/gh.log" "PUT repos/acme/kb/rulesets"
+  has "$OUT" "$CORPUS approvals $CLONE off --as alice"
+}
+
+test_approvals_refuses_a_mistyped_confirmation() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  ! at_terminal acme/other "$CORPUS" approvals "$CLONE" off --as alice > "$OUT" 2>&1 || fail "approvals accepted acme/other"
+  lacks "$FAKE/gh.log" "PUT repos/acme/kb/rulesets"
+  has "$OUT" "did not match"
+}
+
+test_approvals_refuses_the_machine_account() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  ! at_terminal acme/kb "$CORPUS" approvals "$CLONE" off --as kb-bot > "$OUT" 2>&1 || fail "the machine account turned approvals off"
+  lacks "$FAKE/gh.log" "PUT repos/acme/kb/rulesets"
+  has "$OUT" "machine account"
+}
+
+test_approvals_status_needs_no_terminal() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  without_terminal "$CORPUS" approvals "$CLONE" status --as alice > "$OUT" 2>&1 || fail "status failed: $(cat "$OUT")"
+  has "$OUT" "approvals: on"
+  approvals_off || fail "approvals off failed: $(cat "$OUT")"
+  without_terminal "$CORPUS" approvals "$CLONE" status > "$OUT" 2>&1 || fail "status failed: $(cat "$OUT")"
+  has "$OUT" "approvals: off"
 }
 
 for t in $(declare -F | awk '$3 ~ /^test_/ { print $3 }'); do

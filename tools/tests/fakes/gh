@@ -24,7 +24,9 @@ case "$1 $2" in
     case " $* " in *" --private "*) echo true ;; *" --public "*) echo false ;; *) unexpected "$@" ;; esac > "$FAKE/private"
     git init -q --bare -b main "$remote"
     seed="$FAKE/seed"; mkdir -p "$seed"
-    (cd "$FAKE_TEMPLATE" && git ls-files -z | xargs -0 tar -cf -) | tar -xf - -C "$seed"
+    # A store hosting these tests is not the template: leave its entries and settings behind.
+    (cd "$FAKE_TEMPLATE" && git ls-files -z -- . ':!entries' ':!kelsen.yml' | xargs -0 tar -cf -) | tar -xf - -C "$seed"
+    mkdir -p "$seed/entries"; touch "$seed/entries/.gitkeep"
     git -C "$seed" init -q -b main
     git -C "$seed" add -f .
     git -C "$seed" commit -q -m "Initial commit"
@@ -54,6 +56,8 @@ case "$1 $2" in
       "GET users/"*)
         [ -e "$FAKE/accounts/${path#users/}" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
         echo '{}' ;;
+      "GET repos/"*/rules/branches/main)
+        jq '.id as $id | [.rules[] | . + {ruleset_source_type: "Repository", ruleset_id: $id}]' "$FAKE/ruleset.json" | out ;;
       "GET repos/"*/branches/main) echo '{}' ;;
       "POST repos/"*/rulesets)
         if [ -e "$FAKE/plan-refuses" ]; then
@@ -65,9 +69,14 @@ case "$1 $2" in
       "GET repos/"*/rulesets/42)
         if [ -e "$FAKE/readback-differs" ]; then
           jq '.bypass_actors = [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]' "$FAKE/ruleset.json"
+        elif [ -e "$FAKE/readback-drops-tools" ]; then
+          jq '(.rules[] | select(.type == "required_status_checks").parameters.required_status_checks) |= map(select(.context != "tools"))' "$FAKE/ruleset.json"
         else
           cat "$FAKE/ruleset.json"
         fi | out ;;
+      "PUT repos/"*/rulesets/42)
+        if [ -e "$FAKE/ruleset-update-ignored" ]; then cat > /dev/null; else jq '. + {id: 42}' > "$FAKE/ruleset.json"; fi
+        out < "$FAKE/ruleset.json" ;;
       "PUT repos/"*/collaborators/*) echo '{}' ;;
       "PATCH repos/"*)
         [ "$*" = "repos/${path#repos/} -F allow_auto_merge=true" ] || unexpected api "$method" "$@"
