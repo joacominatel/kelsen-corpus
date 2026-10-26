@@ -9,7 +9,7 @@ true in. Create your own store from this template; nothing here is a store itsel
 - [`SPEC.md`](SPEC.md): the entry format and every rule, by ID.
 - `schema/`: the JSON Schemas for entry frontmatter and `kelsen.yml`.
 - `validator/`: `kc-validate`, which prints one line per violation and exits 1 on any.
-- `.github/workflows/validate.yml`: the two admission checks, `validate` and `bm-noop`.
+- `.github/workflows/validate.yml`: the three admission checks, `validate`, `bm-noop`, and `tools`.
 - `kelsen.yml`: the store's settings. Replace the example values.
 - `entries/`: one markdown file per admitted entry.
 - `tools/corpus.sh`: creates a store, proposes entries to it, and searches it.
@@ -25,6 +25,7 @@ tools/corpus.sh init <owner>/<name> --private --account <bot>   # or --public --
 tools/corpus.sh propose <clone> <slug>   # drafts the entry; run again to validate and open the PR
 tools/corpus.sh sync <clone>             # fast-forward to the admitted entries and reindex
 tools/corpus.sh search <clone> <query>   # Basic Memory search over admitted entries only
+tools/corpus.sh approvals <clone> on|off|status   # whether admission PRs need a person's approval
 ```
 
 `init` creates the store from this template, writes `kelsen.yml` and `CODEOWNERS`, protects the
@@ -34,6 +35,14 @@ that only a person can take. A private store on a plan without rulesets is creat
 its checks gate nothing, and search labels every result `unprotected`. `--owners` names the
 code owners who approve entries; it defaults to the creator. `--as` picks the creating account;
 it defaults to gh's active one.
+
+`approvals off` lets admission PRs merge on green checks alone; `approvals on` requires a code
+owner's approval again; `status` prints which one holds. A person runs `on` and `off` from their
+own terminal, as their own account and never the machine account, and confirms by typing the
+store's `<owner>/<name>`. Without a terminal, as in an agent's shell, the command refuses and
+prints what to run, so an agent can show the command but not run it. This stops an agent from
+driving the script; it does not stop direct GitHub API calls made with the person's token.
+While approvals are off, `sync` and `search` print a warning.
 
 ## Validate locally
 
