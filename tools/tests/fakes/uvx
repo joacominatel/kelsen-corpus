@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Fake Basic Memory, reached the way corpus.sh reaches it: through uvx at the pinned version.
+set -euo pipefail
+case " $* " in
+  *" --from basic-memory==0.24.1 bm "*) ;;
+  *) echo "fake uvx: not the pinned Basic Memory: $*" >&2; exit 99 ;;
+esac
+while [ "$1" != bm ]; do shift; done
+shift
+echo "$*" >> "$FAKE/bm.log"
+case "$1 ${2:-}" in
+  "tool search-notes") cat "$FAKE/search.json" ;;
+esac

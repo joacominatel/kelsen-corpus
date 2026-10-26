@@ -37,6 +37,7 @@
 | spec | `SPEC.md`, `schema/**` | `validator/**`, `.github/**` |
 | validator | `validator/**` | `SPEC.md`, `schema/**`, `.github/**` |
 | ci | `.github/**` | `SPEC.md`, `schema/**`, `validator/**` |
+| tools | `tools/**` | `SPEC.md`, `schema/**`, `validator/**`, `.github/**` |
 
 Cross-lane edits require explicit authorization in the dispatch prompt, and the commit message
 records it. A new rule usually spans spec and validator; dispatch it as one unit with both lanes.
@@ -56,9 +57,10 @@ Run all of these from the worktree before opening a PR:
 ```sh
 uv run --project validator --locked pytest validator/tests
 uv run --project validator --locked kc-validate --public .
+./tools/tests/corpus.sh
 ```
 
-CI runs both in `validate`, plus `bm-noop`: Basic Memory 0.24.1 indexes `entries/` and the
+CI runs the first two in `validate` and the third in `tools`, plus `bm-noop`: Basic Memory 0.24.1 indexes `entries/` and the
 working tree must stay clean. Run it locally only when changing the pin or the entry format:
 
 ```sh
@@ -70,12 +72,15 @@ git status --porcelain   # must print nothing
 
 ## Testing
 
-- **Commands**: `uv run --project validator pytest validator/tests` · `... pytest validator/tests -k <name>` · coverage not measured
-- **Test paths**: `validator/tests/**`
+- **Commands**: `uv run --project validator pytest validator/tests` · `... pytest validator/tests -k <name>` · `./tools/tests/corpus.sh` · coverage not measured
+- **Test paths**: `validator/tests/**`, `tools/tests/**`
 - **Suite shape**: one pytest module drives `kc-validate` against a temporary store built from
-  `validator/tests/fixtures/`: one failing fixture per rule ID, plus valid ones.
+  `validator/tests/fixtures/`: one failing fixture per rule ID, plus valid ones. One bash script
+  drives `tools/corpus.sh`, one function per behavior, each in a fresh `HOME`.
 - **Coverage floor**: none
-- **Doubles**: none; the validator runs for real on the filesystem.
+- **Doubles**: the validator has none. The tool tests replace `gh` and `uvx` (Basic Memory) with
+  fakes in `tools/tests/fakes/`, and serve `https://github.com/` from local bare repositories;
+  git and `kc-validate` run for real.
 
 ## Review dimensions
 

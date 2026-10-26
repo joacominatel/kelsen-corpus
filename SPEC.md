@@ -14,7 +14,7 @@ that consumes these stores.
 
 | Key | Value |
 | --- | --- |
-| `id` | the store id, lowercase words joined by `-`; the first half of every permalink |
+| `id` | the store id, lowercase words joined by `-`; the first half of every permalink. `corpus.sh init` sets it to `<owner>-<name>`, so a permalink is unique across stores and a `Knowledge: <permalink>` citation names exactly one entry |
 | `account` | the machine account that opens admission PRs |
 | `host` | the git host, e.g. `github.com` |
 | `spec` | `1`, the version of this specification the store follows |
