@@ -187,12 +187,12 @@
     "changeRef": {
       "x-rule": "KC-F-REF",
       "type": "string",
-      "pattern": "^https://github\\.com/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/(pull/[0-9]+|commit/[0-9a-f]{40})$"
+      "pattern": "^https://<host>/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/(pull/[0-9]+|commit/[0-9a-f]{40})$"
     },
     "immutableRef": {
       "x-rule": "KC-F-REF",
       "type": "string",
-      "pattern": "^https://github\\.com/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/(commit/[0-9a-f]{40}|(blob|tree)/[0-9a-f]{40}(/[^\\s#?]*)?|pull/[0-9]+|issues/[0-9]+|actions/runs/[0-9]+)(#\\S*)?$"
+      "pattern": "^https://<host>/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/(commit/[0-9a-f]{40}|(blob|tree)/[0-9a-f]{40}(/[^\\s#?]*)?|pull/[0-9]+|issues/[0-9]+|actions/runs/[0-9]+)(#\\S*)?$"
     },
     "docRef": {
       "x-rule": "KC-F-REF",
@@ -200,7 +200,7 @@
         { "$ref": "#/$defs/immutableRef" },
         {
           "type": "string",
-          "pattern": "^https://(?!(www\\.)?github\\.com(/|$)|[^/\\s]*githubusercontent\\.com(/|$))[^/\\s]+(/\\S*)?$"
+          "pattern": "^https://(?!(www\\.)?<host>(/|$))[^/\\s]+(/\\S*)?$"
         }
       ]
     }

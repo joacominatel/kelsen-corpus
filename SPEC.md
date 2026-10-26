@@ -23,7 +23,7 @@ that consumes these stores.
 | --- | --- |
 | `id` | the store id, lowercase words joined by `-`; the first half of every permalink. `corpus.sh init` sets it to `<owner>-<name>`, so a permalink is unique across stores and a `Knowledge: <permalink>` citation names exactly one entry. It never changes |
 | `account` | the machine account that opens admission PRs |
-| `host` | the git host, e.g. `github.com` |
+| `host` | the git host every reference points at, e.g. `github.example.com`; optional, `github.com` when absent |
 | `spec` | `2`, the version of this specification the store follows |
 | `protection` | `ruleset` when the default branch is protected, `none` otherwise |
 | `license` | an SPDX identifier for the entries, e.g. `CC-BY-4.0`; required when the store is public |
@@ -31,7 +31,7 @@ that consumes these stores.
 | Rule | Requirement | A failing fixture |
 | --- | --- | --- |
 | KC-C01 | `kelsen.yml` exists and is a YAML mapping. | no `kelsen.yml`; a YAML list |
-| KC-C02 | `kelsen.yml` matches its schema: every key above except `license` is present, values are valid, and unknown keys are rejected. | an unknown key `mode: fast`; no `account` |
+| KC-C02 | `kelsen.yml` matches its schema: every key above except `host` and `license` is present, values are valid, and unknown keys are rejected. | an unknown key `mode: fast`; no `account` |
 | KC-C03 | A public store declares `license`. The visibility comes from the host, not from `kelsen.yml`: CI passes `--public` for a public repository. | `--public` with no `license` |
 | KC-C04 | `spec` is `2`. A newer value means the validator is older than the store and must not judge it; an older one means the store must migrate. | `spec: 3`; `spec: 1` |
 
@@ -53,6 +53,8 @@ body.
   that carries one, following `$ref`. The root carries `KC-E02`, so a missing or unknown
   top-level key is KC-E02 while an unknown key inside `provenance` is KC-F-PROVENANCE.
 - `format: date` is asserted, not just annotated.
+- Schema patterns write the store's host as `<host>`. The validator replaces it with the
+  regex-escaped `host` from `kelsen.yml`, or `github.com` when absent, before compiling the schema.
 - "Today" is the current date in UTC when the validator runs.
 - A body section runs from its `## ` heading line to the next line starting with `# ` or `## `,
   or to the end of the file.
@@ -86,11 +88,12 @@ required.
 | `lifecycle.retracted` | `{reason, ref}`: why the entry was wrong and an immutable reference to the evidence; present exactly when `status` is `retracted` |
 | `stats` | optional: a list of `{name, value, unit, as_of, source}`; `unit` is optional; `source` is `{kind, ref, reporter}` with `kind` one of `report`, `measurement`, `job` |
 
-An **immutable reference** is a `https://github.com/<owner>/<repo>/` URL followed by one of:
+An **immutable reference** is a `https://<host>/<owner>/<repo>/` URL, `<host>` being the store's,
+followed by one of:
 `commit/<sha>`, `blob/<sha>/<path>`, `tree/<sha>/<path>`, `pull/<n>`, `issues/<n>`, or
 `actions/runs/<n>`, where `<sha>` is 40 lowercase hex characters; a `#fragment` may follow. A
-`doc` evidence item may instead use any `https` URL off GitHub. A URL on GitHub that is not in
-this list, such as `blob/main/...`, is mutable and rejected everywhere.
+`doc` evidence item may instead use any `https` URL off `<host>`. A URL on `<host>` that is not
+in this list, such as `blob/main/...`, is mutable and rejected everywhere.
 
 ### Body
 
@@ -202,7 +205,7 @@ nested keys. KC-F-VER, KC-F-REF, and KC-F-DATE own the values they name wherever
 | KC-F-LIFECYCLE | `lifecycle` has `verified_on` and `review_by`, with `review_by` after `verified_on` and at most 365 days after it; `superseded_by` is present exactly when `status` is `superseded`; `retracted` is `{reason, ref}` and present exactly when `status` is `retracted`; `supersedes`, when present, is a non-empty list of distinct permalinks. | `review_by` 366 days after `verified_on`; `status: superseded` without `superseded_by`; a `retracted` block on a verified entry |
 | KC-F-STATS | `stats`, when present, is a list of `{name, value, unit?, as_of, source}`: `value` is a number; `source.kind` is listed; a `report` names its `reporter`; a `measurement` or `job` has a `ref`; no `name` is `citations`, which the maintenance job owns. | a `report` without `reporter`; a `job` without `ref`; `value: "12"`; `name: citations` |
 | KC-F-VER | Every `version` is written as a quoted YAML string in the source, is one line, starts with a non-space, contains none of `^ ~ < > *`, and has no `x` or `X` dot-separated component. | `version: 3.12` (unquoted); `version: "^1.2.0"`; `version: "1.x"` |
-| KC-F-REF | Every `evidence[].ref`, `lifecycle.retracted.ref`, and `stats[].source.ref` is an immutable reference, off GitHub only for `doc` evidence; every `provenance.sources` item is a PR or SHA-pinned commit URL. | `ref: https://github.com/o/r/blob/main/x.py`; an off-GitHub `ref` on `kind: test`; a source `https://github.com/o/r/issues/1` |
+| KC-F-REF | Every `evidence[].ref`, `lifecycle.retracted.ref`, and `stats[].source.ref` is an immutable reference, off `<host>` only for `doc` evidence; every `provenance.sources` item is a PR or SHA-pinned commit URL on `<host>`. | `ref: https://github.com/o/r/blob/main/x.py`; an off-host `ref` on `kind: test`; a PR on another host than `kelsen.yml`'s; a source `https://github.com/o/r/issues/1` |
 | KC-F-DATE | `recorded_on`, `verified_on`, `review_by`, and `as_of` are real calendar dates written `YYYY-MM-DD`; none but `review_by` is after today. | `verified_on: 2026-02-30`; `recorded_on: 26/10/2026`; `as_of: 2999-01-01` |
 
 ### Cross-file
@@ -210,7 +213,7 @@ nested keys. KC-F-VER, KC-F-REF, and KC-F-DATE own the values they name wherever
 | Rule | Requirement | A failing fixture |
 | --- | --- | --- |
 | KC-X01 | No two entries share a `permalink`. | two files whose frontmatter both claim `example/a` |
-| KC-X02 | `superseded_by` names an entry of this store whose `status` is `verified` and whose `supersedes` lists this entry. | a target that does not exist; a stale target; a target without the back-link |
+| KC-X02 | `superseded_by` names an existing entry of this store that is not `retracted` and whose `supersedes` lists this entry. | a target that does not exist; a retracted target; a target without the back-link |
 | KC-X03 | Every permalink in `supersedes` names an entry of this store whose `status` is `superseded` and whose `superseded_by` is this entry. | `supersedes` naming a verified entry |
 | KC-X04 | With `--base`, `kelsen.yml`'s `id` equals the base's. | base `id: example`, head `id: renamed` |
 

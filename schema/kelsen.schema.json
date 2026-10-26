@@ -5,11 +5,11 @@
   "x-rule": "KC-C02",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "account", "host", "spec", "protection"],
+  "required": ["id", "account", "spec", "protection"],
   "properties": {
     "id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
     "account": { "type": "string", "minLength": 1 },
-    "host": { "type": "string", "minLength": 1 },
+    "host": { "type": "string", "pattern": "^[a-z0-9]+([.-][a-z0-9]+)*(:[0-9]+)?$", "default": "github.com" },
     "spec": { "x-rule": "KC-C04", "const": 2 },
     "protection": { "enum": ["ruleset", "none"] },
     "license": { "type": "string", "pattern": "^[A-Za-z0-9.+-]+$" }
