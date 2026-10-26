@@ -113,13 +113,19 @@ test_init_applies_the_admission_ruleset() {
     and (.rules[] | select(.type == "pull_request").parameters
          | .required_approving_review_count == 1 and .require_code_owner_review and .dismiss_stale_reviews_on_push)
     and (.rules[] | select(.type == "required_status_checks").parameters
-         | .strict_required_status_checks_policy and ([.required_status_checks[].context] | sort) == ["bm-noop", "validate"])
+         | .strict_required_status_checks_policy and ([.required_status_checks[].context] | sort) == ["bm-noop", "tools", "validate"])
   ' "$FAKE/ruleset.json" > /dev/null || fail "ruleset sent: $(cat "$FAKE/ruleset.json")"
 }
 
 test_init_fails_when_the_ruleset_reads_back_different() {
   touch "$FAKE/readback-differs"
   ! init_store || fail "init succeeded with a ruleset that has a bypass actor"
+  has "$OUT" "ruleset"
+}
+
+test_init_fails_when_the_ruleset_reads_back_without_the_tools_check() {
+  touch "$FAKE/readback-drops-tools"
+  ! init_store || fail "init succeeded with a ruleset that does not require tools"
   has "$OUT" "ruleset"
 }
 

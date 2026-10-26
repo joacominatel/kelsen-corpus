@@ -50,7 +50,7 @@ ruleset() {
         required_review_thread_resolution: false}},
       {type: "required_status_checks", parameters: {
         strict_required_status_checks_policy: true,
-        required_status_checks: [{context: "validate"}, {context: "bm-noop"}]}}
+        required_status_checks: [{context: "validate"}, {context: "bm-noop"}, {context: "tools"}]}}
     ]}'
 }
 

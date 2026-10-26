@@ -67,6 +67,8 @@ case "$1 $2" in
       "GET repos/"*/rulesets/42)
         if [ -e "$FAKE/readback-differs" ]; then
           jq '.bypass_actors = [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]' "$FAKE/ruleset.json"
+        elif [ -e "$FAKE/readback-drops-tools" ]; then
+          jq '(.rules[] | select(.type == "required_status_checks").parameters.required_status_checks) |= map(select(.context != "tools"))' "$FAKE/ruleset.json"
         else
           cat "$FAKE/ruleset.json"
         fi | out ;;
