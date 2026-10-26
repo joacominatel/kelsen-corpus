@@ -65,6 +65,22 @@ title: Yanked release breaks clean builds
 type: knowledge
 status: verified
 claim: A yanked release in the lockfile fails every clean install.
+provenance:
+  project: example/app
+  sources:
+    - https://github.com/example/app/pull/1
+  author: alice
+  recorded_on: 2026-10-01
+context:
+  language: {name: python, version: "3.12.7"}
+  dependencies: []
+evidence:
+  - kind: pr
+    ref: https://github.com/example/app/pull/1
+    shows: Bumping the pin past the yanked release made clean builds pass.
+lifecycle:
+  verified_on: 2026-10-01
+  review_by: 2027-09-30
 ---
 
 ## Problem
@@ -102,7 +118,7 @@ test_init_commits_settings_and_codeowners() {
   init_store --license CC-BY-4.0 --owners alice,bob || fail "init failed: $(cat "$OUT")"
   remote show main:kelsen.yml > "$T/settings"
   remote show main:.github/CODEOWNERS > "$T/codeowners"
-  [ "$(cat "$T/settings")" = "$(printf 'id: acme-kb\naccount: kb-bot\nhost: github.com\nspec: 1\nprotection: ruleset\nlicense: CC-BY-4.0')" ] \
+  [ "$(cat "$T/settings")" = "$(printf 'id: acme-kb\naccount: kb-bot\nhost: github.com\nspec: 2\nprotection: ruleset\nlicense: CC-BY-4.0')" ] \
     || fail "unexpected kelsen.yml: $(cat "$T/settings")"
   [ "$(cat "$T/codeowners")" = "* @alice @bob" ] || fail "unexpected CODEOWNERS: $(cat "$T/codeowners")"
 }
@@ -118,7 +134,7 @@ test_init_leaves_the_hosting_store_content_behind() {
   mkdir -p "$host"
   (cd "$ROOT" && git ls-files -z | xargs -0 tar -cf -) | tar -xf - -C "$host"
   git -C "$host" init -q -b main
-  printf 'id: other-kb\naccount: other-bot\nhost: github.com\nspec: 1\nprotection: none\n' > "$host/kelsen.yml"
+  printf 'id: other-kb\naccount: other-bot\nhost: github.com\nspec: 2\nprotection: none\n' > "$host/kelsen.yml"
   entry | sed 's|^permalink: acme-kb/|permalink: other-kb/|' > "$host/entries/yanked-release.md"
   git -C "$host" add -f .
   git -C "$host" commit -q -m host
@@ -489,13 +505,14 @@ template_release() {
   git -C "$src" push -q "$FAKE/remotes/joacominatel/kelsen-corpus.git" main "$1"
 }
 
-# A store created by an older template: an admitted entry, and tooling the template has dropped.
+# A store created by an older template: spec 1, an admitted entry, and tooling the template has dropped.
 older_store() {
   init_store || fail "init failed: $(cat "$OUT")"
   git clone -q https://github.com/acme/kb.git "$T/other"
+  perl -pi -e 's/^spec: .*/spec: 1/' "$T/other/kelsen.yml"
   entry > "$T/other/entries/yanked-release.md"
   echo 'echo stale' > "$T/other/tools/stale.sh"
-  git -C "$T/other" add entries/yanked-release.md tools/stale.sh
+  git -C "$T/other" add kelsen.yml entries/yanked-release.md tools/stale.sh
   git -C "$T/other" commit -q -m "admit"
   git -C "$T/other" push -q origin main
   "$CORPUS" sync "$CLONE" > "$OUT" 2>&1 || fail "sync failed: $(cat "$OUT")"
