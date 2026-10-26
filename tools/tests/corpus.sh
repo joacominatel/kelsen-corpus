@@ -107,6 +107,18 @@ test_init_fails_when_the_ruleset_reads_back_different() {
   has "$OUT" "ruleset"
 }
 
+test_init_enables_auto_merge_and_reads_it_back() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  has "$FAKE/gh.log" "GH_TOKEN=token-alice api -X PATCH repos/acme/kb -F allow_auto_merge=true"
+  has "$FAKE/gh.log" "GH_TOKEN=token-alice api repos/acme/kb --jq .allow_auto_merge"
+}
+
+test_init_fails_when_auto_merge_reads_back_disabled() {
+  touch "$FAKE/auto-merge-ignored"
+  ! init_store || fail "init succeeded with auto-merge disabled"
+  has "$OUT" "auto-merge"
+}
+
 test_init_on_a_plan_without_rulesets_records_no_protection_and_continues() {
   touch "$FAKE/plan-refuses"
   init_store || fail "init failed: $(cat "$OUT")"
@@ -219,7 +231,25 @@ test_propose_opens_the_pull_request_as_the_machine_account() {
   remote cat-file -e entry/yanked-release:entries/yanked-release.md || fail "the entry was not pushed"
   has "$FAKE/gh.log" "GH_TOKEN=token-kb-bot pr create -R acme/kb --base main --head entry/yanked-release"
   has "$OUT" "https://github.com/acme/kb/pull/7"
-  lacks "$FAKE/gh.log" "merge"
+}
+
+test_propose_enables_auto_merge_as_the_machine_account() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  "$CORPUS" propose "$CLONE" yanked-release > "$OUT" 2>&1 || fail "scaffold failed: $(cat "$OUT")"
+  entry > "$CLONE/.worktrees/yanked-release/entries/yanked-release.md"
+  "$CORPUS" propose "$CLONE" yanked-release > "$OUT" 2>&1 || fail "propose failed: $(cat "$OUT")"
+  has "$FAKE/gh.log" "GH_TOKEN=token-kb-bot pr merge https://github.com/acme/kb/pull/7 --auto --merge"
+  lacks "$OUT" "WARNING"
+}
+
+test_propose_only_warns_when_auto_merge_is_refused() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  touch "$FAKE/auto-merge-refuses"
+  "$CORPUS" propose "$CLONE" yanked-release > "$OUT" 2>&1 || fail "scaffold failed: $(cat "$OUT")"
+  entry > "$CLONE/.worktrees/yanked-release/entries/yanked-release.md"
+  "$CORPUS" propose "$CLONE" yanked-release > "$OUT" 2>&1 || fail "propose failed on a refused auto-merge: $(cat "$OUT")"
+  has "$OUT" "WARNING"
+  has "$OUT" "https://github.com/acme/kb/pull/7"
 }
 
 test_propose_stops_on_a_validator_rejection() {

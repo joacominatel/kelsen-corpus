@@ -118,6 +118,10 @@ cmd_init() {
       '.bypass_actors == [] and contains($want)' > /dev/null \
       || die "ruleset $rid on $repo does not read back as sent; fix it on GitHub before admitting entries"
     say "Protected the default branch with ruleset $rid."
+    gh api -X PATCH "repos/$repo" -F allow_auto_merge=true > /dev/null
+    [ "$(gh api "repos/$repo" --jq .allow_auto_merge)" = true ] \
+      || die "auto-merge on $repo does not read back as enabled; enable it on GitHub before admitting entries"
+    say "Enabled auto-merge: an approved PR merges once its checks pass."
   elif [ "$visibility" = private ] && grep -q '(HTTP 403)' "$err"; then
     say "WARNING: this plan cannot protect a private repository, so $repo is unprotected:"
     say "  the checks run but gate nothing, and search labels its results. GitHub Pro or Team fixes it."
@@ -135,7 +139,7 @@ cmd_init() {
 
   say "Store ready: $dest"
   say ""
-  say "The machine account $account opens every admission PR, and a person approves it."
+  say "The machine account $account opens every admission PR; it merges once a person approves it."
   say "  1. A person signs it up, because GitHub's terms require one: https://github.com/signup"
   if gh api "users/$account" > /dev/null 2>&1; then
     gh api -X PUT "repos/$repo/collaborators/$account" -f permission=push > /dev/null
@@ -229,6 +233,8 @@ cmd_propose() {
     claim=$(sed -n 's/^claim: *//p' "$wt/$entry" | head -1)
     url=$(gh pr create -R "$repo" --base "$branch" --head "$head" --title "$title" \
       --body "Proposes \`$id/$slug\`: $claim")
+    gh pr merge "$url" --auto --merge > /dev/null \
+      || say "WARNING: auto-merge was refused, so $url stays open for a person to merge after approving it."
   fi
   say "$url"
 }

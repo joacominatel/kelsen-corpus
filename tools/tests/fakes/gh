@@ -40,6 +40,11 @@ case "$1 $2" in
     url="https://github.com/$(opt -R "$@")/pull/7"
     echo "$url" > "$FAKE/pr-${head//\//-}"
     echo "$url" ;;
+  "pr merge")
+    if [ -e "$FAKE/auto-merge-refuses" ]; then
+      echo "GraphQL: Protected branch rules not configured for this branch (enablePullRequestAutoMerge)" >&2
+      exit 1
+    fi ;;
   api\ *)
     shift; method=GET
     [ "$1" = -X ] && { method=$2; shift 2; }
@@ -64,6 +69,12 @@ case "$1 $2" in
           cat "$FAKE/ruleset.json"
         fi | out ;;
       "PUT repos/"*/collaborators/*) echo '{}' ;;
+      "PATCH repos/"*)
+        [ "$*" = "repos/${path#repos/} -F allow_auto_merge=true" ] || unexpected api "$method" "$@"
+        [ -e "$FAKE/auto-merge-ignored" ] || touch "$FAKE/auto-merge" ;;
+      "GET repos/"*)
+        [[ $path =~ ^repos/[^/]+/[^/]+$ ]] || unexpected api "$method" "$path"
+        printf '{"allow_auto_merge":%s}\n' "$([ -e "$FAKE/auto-merge" ] && echo true || echo false)" | out ;;
       *) unexpected api "$method" "$path" ;;
     esac ;;
   *) unexpected "$@" ;;
