@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/joacominatel/kelsen-corpus/schema/kelsen.schema.json",
-  "title": "kelsen-corpus store settings, spec 1",
+  "title": "kelsen-corpus store settings, spec 2",
+  "x-rule": "KC-C02",
   "type": "object",
   "additionalProperties": false,
   "required": ["id", "account", "host", "spec", "protection"],
@@ -9,7 +10,7 @@
     "id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
     "account": { "type": "string", "minLength": 1 },
     "host": { "type": "string", "minLength": 1 },
-    "spec": { "const": 1 },
+    "spec": { "x-rule": "KC-C04", "const": 2 },
     "protection": { "enum": ["ruleset", "none"] },
     "license": { "type": "string", "pattern": "^[A-Za-z0-9.+-]+$" }
   }
