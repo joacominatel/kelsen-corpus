@@ -6,6 +6,8 @@ BASIC_MEMORY=basic-memory==0.24.1
 SLUG='^[a-z0-9]+(-[a-z0-9]+)*$'
 LOGIN='^[A-Za-z0-9-]+$'
 PLACEHOLDER=FILL-IN
+# The admission checks a store requires; upgrade reads this line from the template it brings in.
+CHECKS='validate bm-noop tools'
 
 usage() {
   cat >&2 <<'EOF'
@@ -15,6 +17,7 @@ usage: corpus.sh init <owner>/<name> --public|--private --account <bot> [--licen
        corpus.sh propose <clone> <slug>
        corpus.sh search <clone> <query>
        corpus.sh approvals <clone> on|off|status [--as <login>]
+       corpus.sh upgrade <clone> [--ref <template ref>] [--as <login>]
 EOF
   exit 2
 }
@@ -62,7 +65,7 @@ warn_when_approvals_are_off() {
 }
 
 ruleset() {
-  jq -n '{
+  jq -n --arg checks "$CHECKS" '{
     name: "admission", target: "branch", enforcement: "active", bypass_actors: [],
     conditions: {ref_name: {include: ["~DEFAULT_BRANCH"], exclude: []}},
     rules: [
@@ -74,7 +77,7 @@ ruleset() {
         required_review_thread_resolution: false}},
       {type: "required_status_checks", parameters: {
         strict_required_status_checks_policy: true,
-        required_status_checks: [{context: "validate"}, {context: "bm-noop"}, {context: "tools"}]}}
+        required_status_checks: ($checks | split(" ") | map({context: .}))}}
     ]}'
 }
 
@@ -275,13 +278,18 @@ cmd_propose() {
   git -C "$wt" add "$entry"
   git -C "$wt" diff --cached --quiet || git -C "$wt" commit -q -m "feat: propose $id/$slug"
   git -C "$wt" push -q -u origin "$head"
-  local url title claim
-  url=$(gh pr list -R "$repo" --head "$head" --json url --jq '.[0].url // empty')
+  local title claim
+  title=$(sed -n 's/^title: *//p' "$wt/$entry" | head -1)
+  claim=$(sed -n 's/^claim: *//p' "$wt/$entry" | head -1)
+  open_pr "$repo" "$branch" "$head" "$title" "Proposes \`$id/$slug\`: $claim"
+}
+
+# open_pr <repo> <base> <head> <title> <body>: as GH_TOKEN's account, with auto-merge; an open PR for <head> is reused.
+open_pr() {
+  local url
+  url=$(gh pr list -R "$1" --head "$3" --json url --jq '.[0].url // empty')
   if [ -z "$url" ]; then
-    title=$(sed -n 's/^title: *//p' "$wt/$entry" | head -1)
-    claim=$(sed -n 's/^claim: *//p' "$wt/$entry" | head -1)
-    url=$(gh pr create -R "$repo" --base "$branch" --head "$head" --title "$title" \
-      --body "Proposes \`$id/$slug\`: $claim")
+    url=$(gh pr create -R "$1" --base "$2" --head "$3" --title "$4" --body "$5")
     gh pr merge "$url" --auto --merge > /dev/null \
       || say "WARNING: auto-merge was refused, so $url stays open for a person to merge after approving it."
   fi
@@ -356,10 +364,83 @@ cmd_approvals() {
   say "Approvals are $mode on $repo."
 }
 
+# Only adds the checks the store lacks: a check a person added stays, and the review rule goes back as it came.
+require_checks() {
+  local repo=$1 branch=$2 checks=$3 rules rid missing sent
+  rules=$(gh api "repos/$repo/rules/branches/$branch")
+  rid=$(jq -r '[.[] | select(.type == "required_status_checks")][0].ruleset_id // empty' <<< "$rules")
+  [ -n "$rid" ] || die "$repo has no required status checks on $branch"
+  missing=$(jq -r --arg want "$checks" '($want | split(" "))
+    - [.[] | select(.type == "required_status_checks").parameters.required_status_checks[].context] | join(" ")' <<< "$rules")
+  [ -n "$missing" ] || return 0
+  sent=$(gh api "repos/$repo/rulesets/$rid" | jq --arg missing "$missing" '
+    {name, target, enforcement, bypass_actors, conditions, rules}
+    | (.rules[] | select(.type == "required_status_checks").parameters.required_status_checks)
+      += ($missing | split(" ") | map({context: .}))')
+  gh api -X PUT "repos/$repo/rulesets/$rid" --input - <<< "$sent" > /dev/null
+  gh api "repos/$repo/rulesets/$rid" | jq -e --argjson want "$sent" 'contains($want)' > /dev/null \
+    || die "ruleset $rid on $repo does not read back as sent; check it on GitHub"
+  say "Required the $missing check(s) on $repo."
+}
+
+cmd_upgrade() {
+  [ $# -ge 1 ] || usage
+  local clone=$1 ref=main as=
+  shift
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --ref) ref=${2:-}; shift 2 ;;
+      --as) as=${2:-}; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  store "$clone"
+  [[ $ref =~ ^[A-Za-z0-9._/-]+$ ]] || die "not a template ref: '$ref'"
+  [ -z "$(git -C "$clone" status --porcelain)" ] || die "$clone has local changes; upgrade only starts from a clean clone"
+  local repo account host branch bot owner
+  repo=$(repo_of "$clone"); account=$(setting "$clone" account); host=$(setting "$clone" host)
+  branch=$(default_branch "$clone")
+  [ -n "$as" ] || as=$(active_login)
+  [[ $as =~ $LOGIN ]] || die "accounts must be GitHub logins"
+  [ "$as" != "$account" ] || die "$account is the store's machine account; the ruleset change runs as its owner"
+  bot=$(token "$host" "$account") || die "gh has no token for $account; run corpus.sh init again"
+  owner=$(token "$host" "$as") || die "gh has no token for $as; run: gh auth login"
+
+  git -C "$clone" fetch -q origin
+  git -C "$clone" fetch -q "https://$host/$TEMPLATE.git" "$ref"
+  local sha checks from to wt
+  sha=$(git -C "$clone" rev-parse FETCH_HEAD)
+  checks=$(git -C "$clone" show "$sha:tools/corpus.sh" | sed -n "s/^CHECKS='\(.*\)'$/\1/p")
+  [ -n "$checks" ] || die "$TEMPLATE $ref declares no required checks; pick a newer ref"
+  to=$(git -C "$clone" show "$sha:kelsen.yml" | sed -n 's/^spec: *//p')
+  [[ $to =~ ^[0-9]+$ ]] || die "$TEMPLATE $ref declares no spec version"
+
+  wt=$(mktemp -d)
+  trap "git -C $(printf %q "$clone") worktree remove --force $(printf %q "$wt") 2> /dev/null" EXIT
+  git -C "$clone" worktree add -q --detach "$wt" "origin/$branch"
+  from=$(setting "$wt" spec)
+  git -C "$wt" restore --source="$sha" --staged --worktree -- tools validator schema SPEC.md .github/workflows README.md
+  sed "s/^spec: .*/spec: $to/" "$wt/kelsen.yml" > "$wt/kelsen.yml.new"
+  mv "$wt/kelsen.yml.new" "$wt/kelsen.yml"
+  git -C "$wt" add kelsen.yml
+  if git -C "$wt" diff --cached --quiet; then
+    say "$repo already has the tooling of $TEMPLATE $ref."
+  else
+    [ "$from" = "$to" ] || say "spec: $from -> $to"
+    git -C "$wt" commit -q -m "chore: upgrade to $TEMPLATE $ref"
+    git -C "$wt" push -q -f origin "HEAD:refs/heads/upgrade/$ref"
+    GH_TOKEN=$bot open_pr "$repo" "$branch" "upgrade/$ref" "Upgrade to $TEMPLATE $ref" \
+      "Brings the tooling of \`$TEMPLATE\` at \`$ref\` ($sha) into this store. Entries are untouched; \`kelsen.yml\` changes only in \`spec\`."
+  fi
+
+  [ "$(setting "$clone" protection)" != none ] || return 0
+  GH_TOKEN=$owner require_checks "$repo" "$branch" "$checks"
+}
+
 [ $# -gt 0 ] || usage
 command=$1
 shift
 case $command in
-  init|sync|propose|search|approvals) "cmd_$command" "$@" ;;
+  init|sync|propose|search|approvals|upgrade) "cmd_$command" "$@" ;;
   *) usage ;;
 esac

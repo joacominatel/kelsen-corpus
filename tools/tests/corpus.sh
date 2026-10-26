@@ -466,6 +466,97 @@ test_approvals_status_needs_no_terminal() {
   has "$OUT" "approvals: off"
 }
 
+# --- upgrade -------------------------------------------------------------------------------
+
+# template_release <ref>: publishes the template at <ref> with new tooling, spec 2, and a new
+# required check, plus an entry and settings of its own that must never reach a store.
+template_release() {
+  local src="$T/template"
+  mkdir -p "$src" "$FAKE/remotes/joacominatel"
+  (cd "$ROOT" && git ls-files -z -- . ':!entries' | xargs -0 tar -cf -) | tar -xf - -C "$src"
+  echo 'echo added' > "$src/tools/added.sh"
+  perl -pi -e "s/^CHECKS='(.*)'\$/CHECKS='\$1 lint'/" "$src/tools/corpus.sh"
+  grep -q "^CHECKS='.* lint'$" "$src/tools/corpus.sh" || fail "template_release could not add a check"
+  echo "# Spec 2" >> "$src/SPEC.md"
+  echo "Template readme 2" >> "$src/README.md"
+  printf 'id: template\naccount: template-bot\nhost: github.com\nspec: 2\nprotection: none\n' > "$src/kelsen.yml"
+  mkdir -p "$src/entries"; entry > "$src/entries/template-only.md"
+  git -C "$src" init -q -b main
+  git -C "$src" add -f .
+  git -C "$src" commit -q -m release
+  git -C "$src" tag "$1"
+  git init -q --bare "$FAKE/remotes/joacominatel/kelsen-corpus.git"
+  git -C "$src" push -q "$FAKE/remotes/joacominatel/kelsen-corpus.git" main "$1"
+}
+
+# A store created by an older template: an admitted entry, and tooling the template has dropped.
+older_store() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  git clone -q https://github.com/acme/kb.git "$T/other"
+  entry > "$T/other/entries/yanked-release.md"
+  echo 'echo stale' > "$T/other/tools/stale.sh"
+  git -C "$T/other" add entries/yanked-release.md tools/stale.sh
+  git -C "$T/other" commit -q -m "admit"
+  git -C "$T/other" push -q origin main
+  "$CORPUS" sync "$CLONE" > "$OUT" 2>&1 || fail "sync failed: $(cat "$OUT")"
+  template_release v2
+}
+
+upgrade() { "$CORPUS" upgrade "$CLONE" --ref v2 --as alice "$@" > "$OUT" 2>&1; }
+
+test_upgrade_brings_only_the_template_tooling() {
+  older_store
+  upgrade || fail "upgrade failed: $(cat "$OUT")"
+  remote diff --name-only main upgrade/v2 > "$T/changed"
+  for path in tools/added.sh tools/corpus.sh tools/stale.sh SPEC.md README.md kelsen.yml; do has "$T/changed" "$path"; done
+  ! grep -vE '^(tools/|validator/|schema/|SPEC\.md$|\.github/workflows/|README\.md$|kelsen\.yml$)' "$T/changed" \
+    || fail "changed outside the tooling: $(cat "$T/changed")"
+  ! remote cat-file -e upgrade/v2:tools/stale.sh 2> /dev/null || fail "tooling the template dropped survived"
+  remote diff -U0 main upgrade/v2 -- kelsen.yml | grep '^[-+][^-+]' > "$T/settings"
+  [ "$(cat "$T/settings")" = "$(printf -- '-spec: 1\n+spec: 2')" ] || fail "kelsen.yml changed beyond spec: $(cat "$T/settings")"
+  has "$OUT" "spec: 1 -> 2"
+  [ -z "$(git -C "$CLONE" status --porcelain)" ] || fail "upgrade left the clone dirty"
+  [ "$(git -C "$CLONE" worktree list | wc -l)" -eq 1 ] || fail "upgrade left a worktree: $(git -C "$CLONE" worktree list)"
+}
+
+test_upgrade_opens_the_pull_request_as_the_machine_account_with_auto_merge() {
+  older_store
+  upgrade || fail "upgrade failed: $(cat "$OUT")"
+  has "$FAKE/gh.log" "GH_TOKEN=token-kb-bot pr create -R acme/kb --base main --head upgrade/v2"
+  has "$FAKE/pr-title-upgrade-v2" "v2"
+  has "$FAKE/gh.log" "GH_TOKEN=token-kb-bot pr merge https://github.com/acme/kb/pull/7 --auto --merge"
+  has "$OUT" "https://github.com/acme/kb/pull/7"
+}
+
+test_upgrade_adds_missing_required_checks_as_the_owner_and_keeps_the_rest() {
+  older_store
+  approvals_off || fail "approvals off failed: $(cat "$OUT")"
+  jq '(.rules[] | select(.type == "required_status_checks").parameters.required_status_checks)
+    |= (map(select(.context != "tools")) + [{context: "custom"}])' "$FAKE/ruleset.json" > "$T/rs"
+  mv "$T/rs" "$FAKE/ruleset.json"
+  upgrade || fail "upgrade failed: $(cat "$OUT")"
+  has "$FAKE/gh.log" "GH_TOKEN=token-alice api -X PUT repos/acme/kb/rulesets/42"
+  lacks "$FAKE/gh.log" "GH_TOKEN=token-kb-bot api -X PUT"
+  checks=$(jq -c '[.rules[] | select(.type == "required_status_checks").parameters.required_status_checks[].context] | sort' "$FAKE/ruleset.json")
+  [ "$checks" = '["bm-noop","custom","lint","tools","validate"]' ] || fail "required checks after upgrade: $checks"
+  [ "$(review_params)" = "[0,false]" ] || fail "upgrade changed approvals: $(review_params)"
+}
+
+test_upgrade_refuses_a_dirty_clone() {
+  older_store
+  echo draft > "$CLONE/entries/draft.md"
+  ! upgrade || fail "upgrade ran on a dirty clone"
+  lacks "$FAKE/gh.log" "pr create"
+  ! remote rev-parse -q --verify upgrade/v2 > /dev/null || fail "pushed from a dirty clone"
+}
+
+test_upgrade_refuses_the_machine_account_for_the_ruleset() {
+  older_store
+  ! "$CORPUS" upgrade "$CLONE" --ref v2 --as kb-bot > "$OUT" 2>&1 || fail "the machine account changed the ruleset"
+  lacks "$FAKE/gh.log" "PUT repos/acme/kb/rulesets"
+  has "$OUT" "machine account"
+}
+
 for t in $(declare -F | awk '$3 ~ /^test_/ { print $3 }'); do
   if (fresh; "$t") > "$TMP/result" 2>&1; then
     PASS=$((PASS+1)); printf '  ok    %s\n' "${t#test_}"

@@ -40,6 +40,7 @@ case "$1 $2" in
     if [ -e "$FAKE/pr-${head//\//-}" ]; then printf '[{"url":"%s"}]\n' "$(cat "$FAKE/pr-${head//\//-}")"; else echo '[]'; fi | out ;;
   "pr create")
     head=$(opt --head "$@")
+    opt --title "$@" > "$FAKE/pr-title-${head//\//-}"
     url="https://github.com/$(opt -R "$@")/pull/7"
     echo "$url" > "$FAKE/pr-${head//\//-}"
     echo "$url" ;;
