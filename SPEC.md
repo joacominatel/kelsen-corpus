@@ -1,15 +1,18 @@
 # kelsen-corpus specification, spec 2
 
 A store admits an entry only when every rule below holds. `kc-validate` checks them and reports
-each violation as one line, `<RULE> <path>: <message>`, exiting 1 when there is any. Files are
-checked in path order, settings first. A file that breaks several rules reports each of them.
+each broken rule as one line per file, `<RULE> <path>: <message>`, exiting 1 when there is any.
+Settings come first, then files in path order; the order of rules within one file is
+unspecified. A file that breaks several rules reports each of them. Entries are judged even when
+the settings are invalid.
 
 ```sh
-kc-validate [root] [--public] [--base <git ref>]
+kc-validate [root] [--public] [--base <git ref>] [--today <YYYY-MM-DD>]
 ```
 
 `--public` marks the store as public (KC-C03). `--base` names the commit the change is judged
-against, normally the PR's base branch; the KC-X04 and KC-T rules run only when it is given.
+against, normally the PR's base branch; the KC-X04 and KC-T rules run only when it is given, and
+compare that commit with the working tree. `--today` overrides "today".
 
 The decision behind this format is ADR-0012 in `joacominatel/kelsen`, the engineering harness
 that consumes these stores.
@@ -38,7 +41,9 @@ that consumes these stores.
 ## Entries
 
 One markdown file per entry, `entries/<slug>.md`, where `<slug>` is lowercase words joined by
-`-`. Files starting with `.` are not entries.
+`-`. Files starting with `.` are not entries. A misnamed `.md` file, such as `Bad_Name.md`,
+breaks KC-S01 and is still read as an entry, so it also reports the entry rules it breaks, such
+as KC-E03 or KC-F-PERMALINK.
 
 ### Reading an entry
 
@@ -55,7 +60,7 @@ body.
 - `format: date` is asserted, not just annotated.
 - Schema patterns write the store's host as `<host>`. The validator replaces it with the
   regex-escaped `host` from `kelsen.yml`, or `github.com` when absent, before compiling the schema.
-- "Today" is the current date in UTC when the validator runs.
+- "Today" is the current date in UTC when the validator runs, unless `--today` sets it.
 - A body section runs from its `## ` heading line to the next line starting with `# ` or `## `,
   or to the end of the file.
 
@@ -177,7 +182,7 @@ Each rule names a failing fixture: the smallest change to a valid store that bre
 
 | Rule | Requirement | A failing fixture |
 | --- | --- | --- |
-| KC-S01 | `entries/` is one flat directory: it holds no subdirectory, and every file not starting with `.` is `<slug>.md`. | `entries/git/a.md`; `entries/notes.txt`; `entries/Bad_Name.md` |
+| KC-S01 | `entries/` is one flat directory: it holds no subdirectory, and every file not starting with `.` is `<slug>.md`. A subdirectory is reported by its own path. | `entries/git/a.md`; `entries/notes.txt`; `entries/Bad_Name.md` |
 | KC-E01 | The entry starts with a `---` delimited frontmatter block that is a YAML mapping. | no frontmatter; frontmatter that is not YAML; a YAML list |
 | KC-S02 | The frontmatter has no duplicate key at any depth. | `title` twice; `name` twice inside `context.language` |
 | KC-E02 | Every required top-level key is present and no unknown top-level key is. | no `evidence`; an extra `summary:` |
@@ -212,7 +217,7 @@ nested keys. KC-F-VER, KC-F-REF, and KC-F-DATE own the values they name wherever
 
 | Rule | Requirement | A failing fixture |
 | --- | --- | --- |
-| KC-X01 | No two entries share a `permalink`. | two files whose frontmatter both claim `example/a` |
+| KC-X01 | No two entries share a `permalink`. Each later file in path order is reported. | two files whose frontmatter both claim `example/a` |
 | KC-X02 | `superseded_by` names an existing entry of this store that is not `retracted` and whose `supersedes` lists this entry. | a target that does not exist; a retracted target; a target without the back-link |
 | KC-X03 | Every permalink in `supersedes` names an entry of this store whose `status` is `superseded` and whose `superseded_by` is this entry. | `supersedes` naming a verified entry |
 | KC-X04 | With `--base`, `kelsen.yml`'s `id` equals the base's. | base `id: example`, head `id: renamed` |
