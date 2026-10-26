@@ -35,7 +35,7 @@ init_store() { "$CORPUS" init acme/kb --private --account kb-bot --as alice "$@"
 entry() {
   cat <<'EOF'
 ---
-permalink: kb/yanked-release
+permalink: acme-kb/yanked-release
 title: Yanked release breaks clean builds
 type: knowledge
 status: verified
@@ -77,7 +77,7 @@ test_init_commits_settings_and_codeowners() {
   init_store --license CC-BY-4.0 --owners alice,bob || fail "init failed: $(cat "$OUT")"
   remote show main:kelsen.yml > "$T/settings"
   remote show main:.github/CODEOWNERS > "$T/codeowners"
-  [ "$(cat "$T/settings")" = "$(printf 'id: kb\naccount: kb-bot\nhost: github.com\nspec: 1\nprotection: ruleset\nlicense: CC-BY-4.0')" ] \
+  [ "$(cat "$T/settings")" = "$(printf 'id: acme-kb\naccount: kb-bot\nhost: github.com\nspec: 1\nprotection: ruleset\nlicense: CC-BY-4.0')" ] \
     || fail "unexpected kelsen.yml: $(cat "$T/settings")"
   [ "$(cat "$T/codeowners")" = "* @alice @bob" ] || fail "unexpected CODEOWNERS: $(cat "$T/codeowners")"
 }
@@ -197,7 +197,7 @@ test_propose_scaffolds_a_draft_outside_the_indexed_entries() {
   draft="$CLONE/.worktrees/yanked-release/entries/yanked-release.md"
   [ -f "$draft" ] || fail "no draft at $draft"
   [ ! -e "$CLONE/entries/yanked-release.md" ] || fail "the draft landed in the indexed entries"
-  for line in "permalink: kb/yanked-release" "title:" "type: knowledge" "status: verified" "claim:" \
+  for line in "permalink: acme-kb/yanked-release" "title:" "type: knowledge" "status: verified" "claim:" \
               "## Problem" "## Cause" "## Solution" "## Applying it elsewhere"; do
     has "$draft" "$line"
   done
@@ -241,7 +241,7 @@ test_propose_refuses_an_invalid_slug() {
 # --- search --------------------------------------------------------------------------------
 
 search_result() {
-  echo '{"results":[{"title":"Yanked release breaks clean builds","permalink":"kb/yanked-release","file_path":"yanked-release.md"}]}' \
+  echo '{"results":[{"title":"Yanked release breaks clean builds","permalink":"acme-kb/yanked-release","file_path":"yanked-release.md"}]}' \
     > "$FAKE/search.json"
 }
 
@@ -250,7 +250,7 @@ test_search_queries_the_store_project() {
   search_result
   "$CORPUS" search "$CLONE" yanked lockfile > "$OUT" 2>&1 || fail "search failed: $(cat "$OUT")"
   has "$FAKE/bm.log" "tool search-notes yanked lockfile --project corpus-acme-kb"
-  has "$OUT" "kb/yanked-release"
+  has "$OUT" "acme-kb/yanked-release"
   has "$OUT" "$CLONE/entries/yanked-release.md"
   lacks "$OUT" "unprotected"
 }
@@ -260,7 +260,7 @@ test_search_labels_results_of_an_unprotected_store() {
   init_store || fail "init failed: $(cat "$OUT")"
   search_result
   "$CORPUS" search "$CLONE" yanked > "$OUT" 2>&1 || fail "search failed: $(cat "$OUT")"
-  grep -q 'kb/yanked-release.*unprotected' "$OUT" || fail "unlabeled result: $(cat "$OUT")"
+  grep -q 'acme-kb/yanked-release.*unprotected' "$OUT" || fail "unlabeled result: $(cat "$OUT")"
 }
 
 for t in $(declare -F | awk '$3 ~ /^test_/ { print $3 }'); do

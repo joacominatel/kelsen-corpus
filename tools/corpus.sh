@@ -84,7 +84,7 @@ cmd_init() {
   [ "$visibility" = private ] || [ -n "$license" ] || die "a public store must declare --license <spdx>"
 
   local id dest
-  id=$(echo "${repo#*/}" | tr 'A-Z' 'a-z' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+  id=$(echo "${repo/\//-}" | tr 'A-Z' 'a-z' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
   dest="$HOME/.kelsen/corpus/$repo"
   [ ! -e "$dest" ] || die "$dest already exists"
   if [ -z "$as" ]; then
