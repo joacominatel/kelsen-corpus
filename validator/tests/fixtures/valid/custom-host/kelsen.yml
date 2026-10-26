@@ -1,0 +1,6 @@
+id: example
+account: example-bot
+host: git.example.com
+spec: 2
+protection: none
+license: CC-BY-4.0

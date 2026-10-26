@@ -82,7 +82,7 @@ ruleset() {
 }
 
 write_settings() {
-  { say "id: $id"; say "account: $account"; say "host: $host"; say "spec: 1"; say "protection: $1"
+  { say "id: $id"; say "account: $account"; say "host: $host"; say "spec: 2"; say "protection: $1"
     [ -z "$license" ] || say "license: $license"; } > "$dest/kelsen.yml"
 }
 
