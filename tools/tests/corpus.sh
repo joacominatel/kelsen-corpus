@@ -88,6 +88,22 @@ test_init_settings_pass_the_validator() {
     || fail "kc-validate rejected the new store: $(cat "$T/kc")"
 }
 
+test_init_leaves_the_hosting_store_content_behind() {
+  host="$T/host"
+  mkdir -p "$host"
+  (cd "$ROOT" && git ls-files -z | xargs -0 tar -cf -) | tar -xf - -C "$host"
+  git -C "$host" init -q -b main
+  printf 'id: other-kb\naccount: other-bot\nhost: github.com\nspec: 1\nprotection: none\n' > "$host/kelsen.yml"
+  entry | sed 's|^permalink: acme-kb/|permalink: other-kb/|' > "$host/entries/yanked-release.md"
+  git -C "$host" add -f .
+  git -C "$host" commit -q -m host
+  export FAKE_TEMPLATE="$host"
+  init_store || fail "init failed: $(cat "$OUT")"
+  [ ! -e "$CLONE/entries/yanked-release.md" ] || fail "the hosting store's entry reached the new store"
+  uv run --quiet --project "$CLONE/validator" --locked kc-validate "$CLONE" > "$T/kc" 2>&1 \
+    || fail "kc-validate rejected the new store: $(cat "$T/kc")"
+}
+
 test_init_applies_the_admission_ruleset() {
   init_store || fail "init failed: $(cat "$OUT")"
   jq -e '

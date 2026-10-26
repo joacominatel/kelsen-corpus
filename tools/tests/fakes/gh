@@ -24,7 +24,9 @@ case "$1 $2" in
     case " $* " in *" --private "*) echo true ;; *" --public "*) echo false ;; *) unexpected "$@" ;; esac > "$FAKE/private"
     git init -q --bare -b main "$remote"
     seed="$FAKE/seed"; mkdir -p "$seed"
-    (cd "$FAKE_TEMPLATE" && git ls-files -z | xargs -0 tar -cf -) | tar -xf - -C "$seed"
+    # A store hosting these tests is not the template: leave its entries and settings behind.
+    (cd "$FAKE_TEMPLATE" && git ls-files -z -- . ':!entries' ':!kelsen.yml' | xargs -0 tar -cf -) | tar -xf - -C "$seed"
+    mkdir -p "$seed/entries"; touch "$seed/entries/.gitkeep"
     git -C "$seed" init -q -b main
     git -C "$seed" add -f .
     git -C "$seed" commit -q -m "Initial commit"
