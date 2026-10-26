@@ -20,7 +20,7 @@ fresh() {
   export HOME="$T/home" FAKE="$T/fake" FAKE_TEMPLATE="$ROOT" PATH="$ROOT/tools/tests/fakes:$BASE_PATH"
   export GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1
   unset GH_TOKEN GITHUB_TOKEN
-  mkdir -p "$HOME" "$FAKE/remotes/acme" "$FAKE/accounts" "$FAKE/logged-out"
+  mkdir -p "$HOME" "$FAKE/remotes/acme" "$FAKE/accounts" "$FAKE/logged-out" "$FAKE/invitations" "$FAKE/collaborators"
   touch "$FAKE/gh.log" "$FAKE/bm.log" "$FAKE/accounts/alice" "$FAKE/accounts/kb-bot"
   echo alice > "$FAKE/active"
   git config --global user.name Tester
@@ -200,18 +200,70 @@ test_init_registers_and_indexes_the_search_project() {
   has "$FAKE/bm.log" "reindex --search -p corpus-acme-kb"
 }
 
+LOGIN_COMMAND="gh auth login --hostname github.com --web --scopes repo,read:org && gh auth switch --hostname github.com --user alice"
+
 test_init_invites_an_existing_machine_account_with_write_access() {
   init_store || fail "init failed: $(cat "$OUT")"
   has "$FAKE/gh.log" "GH_TOKEN=token-alice api -X PUT repos/acme/kb/collaborators/kb-bot -f permission=push"
-  has "$OUT" "gh auth login"
+}
+
+test_init_accepts_the_invitation_as_a_logged_in_machine_account() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  has "$FAKE/gh.log" "GH_TOKEN=token-kb-bot api -X PATCH user/repository_invitations/99"
+  [ -e "$FAKE/collaborators/kb-bot" ] || fail "kb-bot is not a collaborator"
+  lacks "$OUT" "gh auth login"
+  has "$OUT" "Store ready"
+}
+
+test_init_asks_a_person_for_one_web_login_of_the_machine_account() {
+  touch "$FAKE/logged-out/kb-bot"
+  ! init_store || fail "init finished without the machine account logged in"
+  has "$OUT" "$LOGIN_COMMAND"
+  [ "$(grep -c 'gh auth' "$OUT")" = 1 ] || fail "expected exactly one command: $(cat "$OUT")"
+  lacks "$OUT" "token.txt"
+  lacks "$OUT" "settings/tokens"
+  lacks "$FAKE/gh.log" "user/repository_invitations"
+  [ -d "$CLONE/.git" ] || fail "no clone before the login step"
 }
 
 test_init_guides_the_signup_of_a_missing_machine_account() {
   rm "$FAKE/accounts/kb-bot"
-  init_store || fail "init failed: $(cat "$OUT")"
+  touch "$FAKE/logged-out/kb-bot"
+  ! init_store || fail "init finished without a machine account"
   lacks "$FAKE/gh.log" "collaborators/kb-bot"
   has "$OUT" "https://github.com/signup"
-  has "$OUT" "repos/acme/kb/collaborators/kb-bot -f permission=push"
+  has "$OUT" "$LOGIN_COMMAND"
+}
+
+test_init_rerun_after_the_person_steps_finishes_without_recreating() {
+  rm "$FAKE/accounts/kb-bot"
+  touch "$FAKE/logged-out/kb-bot"
+  ! init_store || fail "init finished without a machine account"
+  touch "$FAKE/accounts/kb-bot"
+  rm "$FAKE/logged-out/kb-bot"
+  : > "$FAKE/gh.log"; : > "$FAKE/bm.log"
+  init_store || fail "re-run failed: $(cat "$OUT")"
+  lacks "$FAKE/gh.log" "repo create"
+  lacks "$FAKE/gh.log" "POST repos/acme/kb/rulesets"
+  lacks "$FAKE/bm.log" "project add"
+  has "$FAKE/gh.log" "GH_TOKEN=token-alice api -X PUT repos/acme/kb/collaborators/kb-bot -f permission=push"
+  has "$FAKE/gh.log" "GH_TOKEN=token-kb-bot api -X PATCH user/repository_invitations/99"
+  [ "$(remote log --oneline main | grep -c 'configure store')" = 1 ] || fail "settings committed again"
+  has "$OUT" "Store ready"
+}
+
+test_init_rerun_on_a_finished_store_changes_nothing() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  approvals_off || fail "approvals off failed: $(cat "$OUT")"
+  before=$(remote rev-parse main)
+  : > "$FAKE/gh.log"; : > "$FAKE/bm.log"
+  init_store || fail "re-run failed: $(cat "$OUT")"
+  [ "$(remote rev-parse main)" = "$before" ] || fail "re-run pushed to main"
+  for call in "repo create" "rulesets" "PATCH repos/acme/kb" "user/repository_invitations/"; do
+    lacks "$FAKE/gh.log" "$call"
+  done
+  [ ! -s "$FAKE/bm.log" ] || fail "re-run touched Basic Memory: $(cat "$FAKE/bm.log")"
+  [ "$(review_params)" = "[0,false]" ] || fail "re-run changed approvals: $(review_params)"
 }
 
 test_init_refuses_an_account_that_is_not_a_login() {
@@ -412,6 +464,97 @@ test_approvals_status_needs_no_terminal() {
   approvals_off || fail "approvals off failed: $(cat "$OUT")"
   without_terminal "$CORPUS" approvals "$CLONE" status > "$OUT" 2>&1 || fail "status failed: $(cat "$OUT")"
   has "$OUT" "approvals: off"
+}
+
+# --- upgrade -------------------------------------------------------------------------------
+
+# template_release <ref>: publishes the template at <ref> with new tooling, spec 2, and a new
+# required check, plus an entry and settings of its own that must never reach a store.
+template_release() {
+  local src="$T/template"
+  mkdir -p "$src" "$FAKE/remotes/joacominatel"
+  (cd "$ROOT" && git ls-files -z -- . ':!entries' | xargs -0 tar -cf -) | tar -xf - -C "$src"
+  echo 'echo added' > "$src/tools/added.sh"
+  perl -pi -e "s/^CHECKS='(.*)'\$/CHECKS='\$1 lint'/" "$src/tools/corpus.sh"
+  grep -q "^CHECKS='.* lint'$" "$src/tools/corpus.sh" || fail "template_release could not add a check"
+  echo "# Spec 2" >> "$src/SPEC.md"
+  echo "Template readme 2" >> "$src/README.md"
+  printf 'id: template\naccount: template-bot\nhost: github.com\nspec: 2\nprotection: none\n' > "$src/kelsen.yml"
+  mkdir -p "$src/entries"; entry > "$src/entries/template-only.md"
+  git -C "$src" init -q -b main
+  git -C "$src" add -f .
+  git -C "$src" commit -q -m release
+  git -C "$src" tag "$1"
+  git init -q --bare "$FAKE/remotes/joacominatel/kelsen-corpus.git"
+  git -C "$src" push -q "$FAKE/remotes/joacominatel/kelsen-corpus.git" main "$1"
+}
+
+# A store created by an older template: an admitted entry, and tooling the template has dropped.
+older_store() {
+  init_store || fail "init failed: $(cat "$OUT")"
+  git clone -q https://github.com/acme/kb.git "$T/other"
+  entry > "$T/other/entries/yanked-release.md"
+  echo 'echo stale' > "$T/other/tools/stale.sh"
+  git -C "$T/other" add entries/yanked-release.md tools/stale.sh
+  git -C "$T/other" commit -q -m "admit"
+  git -C "$T/other" push -q origin main
+  "$CORPUS" sync "$CLONE" > "$OUT" 2>&1 || fail "sync failed: $(cat "$OUT")"
+  template_release v2
+}
+
+upgrade() { "$CORPUS" upgrade "$CLONE" --ref v2 --as alice "$@" > "$OUT" 2>&1; }
+
+test_upgrade_brings_only_the_template_tooling() {
+  older_store
+  upgrade || fail "upgrade failed: $(cat "$OUT")"
+  remote diff --name-only main upgrade/v2 > "$T/changed"
+  for path in tools/added.sh tools/corpus.sh tools/stale.sh SPEC.md README.md kelsen.yml; do has "$T/changed" "$path"; done
+  ! grep -vE '^(tools/|validator/|schema/|SPEC\.md$|\.github/workflows/|README\.md$|kelsen\.yml$)' "$T/changed" \
+    || fail "changed outside the tooling: $(cat "$T/changed")"
+  ! remote cat-file -e upgrade/v2:tools/stale.sh 2> /dev/null || fail "tooling the template dropped survived"
+  remote diff -U0 main upgrade/v2 -- kelsen.yml | grep '^[-+][^-+]' > "$T/settings"
+  [ "$(cat "$T/settings")" = "$(printf -- '-spec: 1\n+spec: 2')" ] || fail "kelsen.yml changed beyond spec: $(cat "$T/settings")"
+  has "$OUT" "spec: 1 -> 2"
+  [ -z "$(git -C "$CLONE" status --porcelain)" ] || fail "upgrade left the clone dirty"
+  [ "$(git -C "$CLONE" worktree list | wc -l)" -eq 1 ] || fail "upgrade left a worktree: $(git -C "$CLONE" worktree list)"
+}
+
+test_upgrade_opens_the_pull_request_as_the_machine_account_with_auto_merge() {
+  older_store
+  upgrade || fail "upgrade failed: $(cat "$OUT")"
+  has "$FAKE/gh.log" "GH_TOKEN=token-kb-bot pr create -R acme/kb --base main --head upgrade/v2"
+  has "$FAKE/pr-title-upgrade-v2" "v2"
+  has "$FAKE/gh.log" "GH_TOKEN=token-kb-bot pr merge https://github.com/acme/kb/pull/7 --auto --merge"
+  has "$OUT" "https://github.com/acme/kb/pull/7"
+}
+
+test_upgrade_adds_missing_required_checks_as_the_owner_and_keeps_the_rest() {
+  older_store
+  approvals_off || fail "approvals off failed: $(cat "$OUT")"
+  jq '(.rules[] | select(.type == "required_status_checks").parameters.required_status_checks)
+    |= (map(select(.context != "tools")) + [{context: "custom"}])' "$FAKE/ruleset.json" > "$T/rs"
+  mv "$T/rs" "$FAKE/ruleset.json"
+  upgrade || fail "upgrade failed: $(cat "$OUT")"
+  has "$FAKE/gh.log" "GH_TOKEN=token-alice api -X PUT repos/acme/kb/rulesets/42"
+  lacks "$FAKE/gh.log" "GH_TOKEN=token-kb-bot api -X PUT"
+  checks=$(jq -c '[.rules[] | select(.type == "required_status_checks").parameters.required_status_checks[].context] | sort' "$FAKE/ruleset.json")
+  [ "$checks" = '["bm-noop","custom","lint","tools","validate"]' ] || fail "required checks after upgrade: $checks"
+  [ "$(review_params)" = "[0,false]" ] || fail "upgrade changed approvals: $(review_params)"
+}
+
+test_upgrade_refuses_a_dirty_clone() {
+  older_store
+  echo draft > "$CLONE/entries/draft.md"
+  ! upgrade || fail "upgrade ran on a dirty clone"
+  lacks "$FAKE/gh.log" "pr create"
+  ! remote rev-parse -q --verify upgrade/v2 > /dev/null || fail "pushed from a dirty clone"
+}
+
+test_upgrade_refuses_the_machine_account_for_the_ruleset() {
+  older_store
+  ! "$CORPUS" upgrade "$CLONE" --ref v2 --as kb-bot > "$OUT" 2>&1 || fail "the machine account changed the ruleset"
+  lacks "$FAKE/gh.log" "PUT repos/acme/kb/rulesets"
+  has "$OUT" "machine account"
 }
 
 for t in $(declare -F | awk '$3 ~ /^test_/ { print $3 }'); do
