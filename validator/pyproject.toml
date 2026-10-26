@@ -1,0 +1,20 @@
+[project]
+name = "kelsen-corpus-validator"
+version = "0.1.0"
+description = "Admission validator for kelsen-corpus knowledge stores."
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "jsonschema>=4.23",
+    "pyyaml>=6.0.2",
+]
+
+[project.scripts]
+kc-validate = "kelsen_corpus_validator.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.3"]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.14"]
+build-backend = "uv_build"

@@ -1,0 +1,7 @@
+# Store settings. Replace every value when you create a store from this template.
+id: example
+account: example-bot
+host: github.com
+spec: 1
+protection: none
+license: CC-BY-4.0
