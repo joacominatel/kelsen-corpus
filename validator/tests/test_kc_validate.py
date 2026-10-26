@@ -46,7 +46,7 @@ def run(case, root, capsys, public=True):
         base = git(root, "rev-parse", "HEAD")
         place(case / "head", root)
         git(root, "add", "--all")
-        git(root, "commit", "-q", "-m", "head")
+        git(root, "commit", "-q", "--allow-empty", "-m", "head")
         argv += ["--base", base]
     else:
         shutil.copytree(case, root, dirs_exist_ok=True, ignore=shutil.ignore_patterns("expected"))
